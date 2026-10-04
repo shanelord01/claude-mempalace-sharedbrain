@@ -84,7 +84,12 @@ const MARKS = /[\u{1F4E8}\u{1F510}\u26A0\u26D4\u2705\u2714\u2611\uFE0F]/gu
 
 /** Agent-written text for display: control characters and the plugin's own marks removed. */
 export function cleanText(text: unknown, limit: number): string {
-  return clean(String(text ?? '').replace(MARKS, ''), limit)
+  return clean(noFence(String(text ?? '').replace(MARKS, '')), limit)
+}
+
+/** Collapses every run of three or more angle brackets, so agent text can never form a fence marker. */
+export function noFence(text: string): string {
+  return text.replace(/<{3,}/g, '<').replace(/>{3,}/g, '>')
 }
 
 /** The header a person sees for one message: who sent it, and what this machine's own check found. */
@@ -356,7 +361,7 @@ const verifiedBodies = new Map<string, string>()
 
 /** Agent text kept as lines (control characters other than newlines and the plugin's marks removed). */
 export function cleanBody(text: unknown, limit: number): string {
-  const kept = String(text ?? '').replace(MARKS, '').replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').trim()
+  const kept = noFence(String(text ?? '').replace(MARKS, '')).replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').trim()
   return kept.length > limit ? kept.slice(0, limit - 1) + '…' : kept
 }
 
