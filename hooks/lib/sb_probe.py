@@ -549,7 +549,11 @@ def peers(cfg):
     try:
         client, transport, token = open_client(cfg)
         if client is None:
-            out["error"] = "no transport configured"
+            # Not a failure: on a machine without a hook-side transport the session's own MCP
+            # connection answers mempalace_mesh_peers; /statusz needs the hub's token, so it is skipped.
+            out["transport"] = "none"
+            out["note"] = ("No hook-side path to the hub on this machine: call mempalace_mesh_peers through the "
+                           "session's MCP tools. /statusz needs a hook-side transport with the hub's token.")
             return out
         client.initialize()
         out["mesh_peers"] = client.call_tool("mempalace_mesh_peers", {})

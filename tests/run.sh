@@ -328,6 +328,10 @@ expect_contains "letter-suffixed release build is not a beta" "$OUT" "['Xcode-be
 OUT="$(echo '{"session_id":"m0","source":"startup","cwd":"/tmp/demo/some/subdir"}' | "$SS" | context_of)"
 expect_contains "identity follows the project root, not a shell cd" "$OUT" "Identity for this session: office-desktop:claude:demo"
 
+OUT="$("$SETUP" peers)"; RC=$?
+expect_eq "peers without a transport is not an error" "$RC" "0"
+expect_contains "peers without a transport says what to do" "$OUT" "call mempalace_mesh_peers through the session's MCP tools"
+
 echo "# mod"
 "$SETUP" init --transport none >/dev/null
 OUT="$("$SETUP" mod-context --cwd /tmp/demo)"

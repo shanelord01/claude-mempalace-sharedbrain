@@ -208,11 +208,21 @@ async function events($: Api, server: string, args: Record<string, unknown>): Pr
   return (data.events as HubEvent[] | undefined) ?? []
 }
 
+// Which filter selects an identity's own events on this hub: `writer` on newer MemPalace, `from_agent`
+// on 3.10 (which rejects `writer` as an unknown parameter). Learned once, so a sweep does not pay a
+// failing call every time.
+let ownFilter: 'writer' | 'from_agent' | '' = ''
+
 async function ownEvents($: Api, server: string, ident: string): Promise<HubEvent[]> {
+  if (ownFilter) return events($, server, { [ownFilter]: ident, limit: 100 })
   try {
-    return await events($, server, { writer: ident, limit: 100 })
+    const got = await events($, server, { writer: ident, limit: 100 })
+    ownFilter = 'writer'
+    return got
   } catch {
-    return events($, server, { from_agent: ident, limit: 100 })
+    const got = await events($, server, { from_agent: ident, limit: 100 })
+    ownFilter = 'from_agent'
+    return got
   }
 }
 

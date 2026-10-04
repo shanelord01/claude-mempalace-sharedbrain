@@ -8,7 +8,7 @@ instead and these copies are not read.
 
 | File | Upstream path | Version | Commit | sha256 |
 |---|---|---|---|---|
-| `shared_brain_rules.md` | `mempalace/instructions/shared_brain_rules.md` | 3.11.0 | 43122aefb8ed58e9fa4e1953e15ce70026339ec2 | aad08b8d57bf5f13dacdec2a4e6e790ef324642c5fde28adad0dde9d50b0d688 |
+| `shared_brain_rules.md` | `mempalace/instructions/shared_brain_rules.md` | 3.10.0 (release; identical on `develop` 43122ae) | 22fd87f09c19d5ffb2d6966486483353937931c0 | aad08b8d57bf5f13dacdec2a4e6e790ef324642c5fde28adad0dde9d50b0d688 |
 
 Upstream keeps `shared_brain_rules.md` test-pinned to the System-Prompt Snippet
 in `integrations/shared/coordination-protocol.md`, the single source of truth
