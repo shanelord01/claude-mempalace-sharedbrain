@@ -21,7 +21,7 @@ import sb_probe as P  # noqa: E402
 def main():
     payload = C.read_hook_input()
     cfg = C.load_config()
-    cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    cwd = str(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())  # the project root: a shell cd does not move it
     ident = C.identity(cfg, cwd)
     watch = C.read_watch(ident)
     if C.mod_active(payload) or not watch.get("armed"):  # the mod runs the wake check itself

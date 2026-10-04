@@ -325,6 +325,9 @@ print(x['present'], x.get('version'), b['present'], b.get('version'), [a['app'] 
 expect_contains "beta-named bundle still counts as xcode" "$OUT" "True 27.1 True 27.1"
 expect_contains "letter-suffixed release build is not a beta" "$OUT" "['Xcode-beta.app']"
 
+OUT="$(echo '{"session_id":"m0","source":"startup","cwd":"/tmp/demo/some/subdir"}' | "$SS" | context_of)"
+expect_contains "identity follows the project root, not a shell cd" "$OUT" "Identity for this session: office-desktop:claude:demo"
+
 echo "# mod"
 "$SETUP" init --transport none >/dev/null
 OUT="$("$SETUP" mod-context --cwd /tmp/demo)"

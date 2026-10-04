@@ -43,7 +43,7 @@ def main():
         C.emit({})
         return
 
-    cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    cwd = str(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())  # the project root: a shell cd does not move it
     ident = C.identity(cfg, cwd)
     session_id = C.safe_id(payload.get("session_id"))
     transcript = os.path.expanduser(str(payload.get("transcript_path") or ""))

@@ -237,7 +237,7 @@ async function pollWatch($: Api, ctx: ModContext, server: string): Promise<Inbox
   const ordered = watch.since_event_id ? got : [...got].reverse()
   const last = String(ordered.at(-1)?.id ?? '')
   if (last && last !== watch.since_event_id) {
-    await python($, await $.session.cwd(), ['listen', 'cursor', last])
+    await python($, await $.session.root(), ['listen', 'cursor', last])
   }
   if (!watch.since_event_id) return [] // first look only sets the cursor, as `logstream watch` does
   return ordered.filter(e => e.from_agent !== ctx.identity && types.has(String(e.type))).map(e => toItem(e, ctx.capabilities ?? {}))
@@ -298,7 +298,7 @@ export const register: Register = on => {
     timer = $.clock.every(POLL_MS, () => {
       void (async () => {
         try {
-          const ctx = await modContext($, await $.session.cwd())
+          const ctx = await modContext($, await $.session.root())
           if (!ctx.watch?.armed) return
           const server = await findServer($, ctx.mcp_server)
           const fresh = await pollWatch($, ctx, server)
@@ -336,7 +336,7 @@ export const register: Register = on => {
     const extra: string[] = []
     let ctx: ModContext | undefined
     try {
-      const cwd = String((e as { cwd?: string }).cwd || (await $.session.cwd()))
+      const cwd = await $.session.root() // the project root: a shell cd does not move it
       ctx = await modContext($, cwd)
       if (!swept && ctx.sweep) {
         swept = true

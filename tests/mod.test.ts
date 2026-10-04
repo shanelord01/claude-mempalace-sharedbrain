@@ -31,7 +31,8 @@ function world(on: Parameters<Parameters<typeof test>[1] & Function>[1], opts: {
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
   mock.env(on, {})
-  on('session.cwd', async () => ({ value: '/tmp/demo' }))
+  on('session.cwd', async () => ({ value: '/tmp/demo/sub' }))
+  on('session.root', async () => ({ value: '/tmp/demo' }))
   for (const noop of ['ui.log', 'ui.status', 'ui.toast', 'ui.invalidate'] as const) on(noop, async () => ({ value: undefined }))
   // Stand-ins for the plugin's command hooks: record what reached them, add their own context.
   on('classic.SessionStart', async (_$: unknown, e: Record<string, unknown>) => {
@@ -45,6 +46,7 @@ function world(on: Parameters<Parameters<typeof test>[1] & Function>[1], opts: {
   on('process.run', async (_$: unknown, e: { argv: readonly string[] }) => {
     const args = e.argv.slice(2)
     calls.push([...args])
+    if (e.argv.includes('--cwd')) expect(e.argv[e.argv.indexOf('--cwd') + 1]).toBe('/tmp/demo')
     if (args[0] === 'mod-context') return { value: { exitCode: 0, stdout: JSON.stringify(opts.ctx ?? context()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
