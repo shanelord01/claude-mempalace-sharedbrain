@@ -1,0 +1,16 @@
+{
+  "name": "shanelord01",
+  "owner": {
+    "name": "shanelord01",
+    "url": "https://github.com/shanelord01"
+  },
+  "description": "Claude Code plugins by shanelord01",
+  "plugins": [
+    {
+      "name": "mempalace-sharedbrain",
+      "source": ".",
+      "version": "0.1.0",
+      "description": "Session bootstrap, task inbox, checkpoint reminders and compaction snapshots for a MemPalace memory palace (shared hub or local)."
+    }
+  ]
+}
