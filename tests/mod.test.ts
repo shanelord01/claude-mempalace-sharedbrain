@@ -45,6 +45,10 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     beneath.push(e)
     return {}
   })
+  on('classic.Stop', async () => ({}))
+  // The conversation as sent to the model: the test decides what reached it.
+  const conversation: string[] = []
+  on('session.messages', async () => ({ value: [{ role: 'user', content: [{ type: 'text', text: conversation.join('\n') }] }] }))
   on('process.run', async (_$: unknown, e: { argv: readonly string[] }) => {
     const args = e.argv.slice(2)
     calls.push([...args])
@@ -65,7 +69,8 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     else if (a.limit === 1) events = []
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events, count: events.length }) }], isError: false } }
   })
-  return { calls, mcp, beneath }
+  const deliver = (result: { additionalContext?: readonly string[] }) => conversation.push(...(result.additionalContext ?? []))
+  return { calls, mcp, beneath, deliver }
 }
 
 describe('helpers', () => {
@@ -99,8 +104,8 @@ describe('session start and the first prompt', () => {
     expect(mcp.length).toBe(0)
   })
 
-  test('the first prompt sweeps the inbox through MCP and records the cursor', async ($, on) => {
-    const { calls } = world(on)
+  test('the first prompt sweeps; the cursor is recorded once the message reached the model', async ($, on) => {
+    const { calls, deliver } = world(on)
     await $.classic.SessionStart({ source: 'startup' } as never)
     const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
     const text = (result.additionalContext ?? []).join('\n')
@@ -109,9 +114,24 @@ describe('session start and the first prompt', () => {
     expect(text).toContain('THIS MACHINE CANNOT MEET: xcode>=27')
     expect(text).toContain('with no ack from this identity: 1')
     expect(text).not.toContain('done already')
+    expect(text).toContain('once this message has reached you')
+    expect(calls).not.toContainEqual(['cursor', 'set', 'evt_01'])
+    deliver(result)
+    await $.classic.Stop({ stop_hook_active: false } as never)
     expect(calls).toContainEqual(['cursor', 'set', 'evt_01'])
     const second = await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
     expect(second.additionalContext ?? []).toEqual([])
+  })
+
+  test('a message that never reached the model is shown again and the cursor stays', async ($, on) => {
+    const { calls } = world(on)
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.classic.UserPromptSubmit({ prompt: 'hello' } as never) // its result is dropped: nothing delivered
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    expect(calls).not.toContainEqual(['cursor', 'set', 'evt_01'])
+    const again = await $.classic.UserPromptSubmit({ prompt: 'next' } as never)
+    expect((again.additionalContext ?? []).join('\n')).toContain('evt_01')
+    expect(calls).not.toContainEqual(['cursor', 'set', 'evt_01'])
   })
 
   test('a configured server that does not answer falls back to the model sweep', async ($, on) => {
@@ -142,33 +162,51 @@ describe('session start and the first prompt', () => {
 
   test('a connector that comes up on a later prompt is swept then', async ($, on) => {
     let up = false
-    const { calls } = world(on, { isUp: () => up })
+    const { calls, deliver } = world(on, { isUp: () => up })
     await $.classic.SessionStart({ source: 'startup' } as never)
     const first = await $.classic.UserPromptSubmit({ prompt: 'one' } as never)
     expect((first.additionalContext ?? []).join('\n')).toContain('tries again with the next prompt')
     up = true
     const second = await $.classic.UserPromptSubmit({ prompt: 'two' } as never)
     expect((second.additionalContext ?? []).join('\n')).toContain('checked by the mempalace-sharedbrain mod')
+    deliver(second)
+    await $.classic.Stop({ stop_hook_active: false } as never)
     expect(calls).toContainEqual(['cursor', 'set', 'evt_01'])
   })
 })
 
 describe('wake check', () => {
+  test('undelivered mail is handed over again, once', async ($, on) => {
+    const mail = [{ id: 'evt_w2', type: 'task.reply', from_agent: 'peer', to_agent: ME, body: 'patch is ready' }]
+    const { calls, deliver } = world(on, { ctx: context({ watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: mail })
+    await $.classic.UserPromptSubmit({ prompt: 'one' } as never) // dropped
+    const again = await $.classic.UserPromptSubmit({ prompt: 'two' } as never)
+    const text = (again.additionalContext ?? []).join('\n')
+    expect(text).toContain('MEMPALACE WAKE: 1 coordination event')
+    expect(text.split('patch is ready').length - 1).toBe(1)
+    deliver(again)
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    expect(calls).toContainEqual(['listen', 'cursor', 'evt_w2'])
+  })
+
   test('hands new mail over with the prompt while listening', async ($, on) => {
     const mail = [{ id: 'evt_w2', type: 'task.reply', from_agent: 'peer', to_agent: ME, body: 'patch is ready' },
                   { id: 'evt_w3', type: 'task.reply', from_agent: ME, to_agent: ME, body: 'my own' }]
-    const { calls } = world(on, { ctx: context({ watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: mail })
+    const { calls, deliver } = world(on, { ctx: context({ watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: mail })
     const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
     const text = (result.additionalContext ?? []).join('\n')
     expect(text).toContain('MEMPALACE WAKE: 1 coordination event')
     expect(text).toContain('patch is ready')
     expect(text).not.toContain('my own')
+    expect(calls).not.toContainEqual(['listen', 'cursor', 'evt_w3'])
+    deliver(result)
+    await $.classic.Stop({ stop_hook_active: false } as never)
     expect(calls).toContainEqual(['listen', 'cursor', 'evt_w3'])
   })
 
   test('adds nothing after the first prompt when not listening', async ($, on) => {
-    const { beneath } = world(on)
-    await $.classic.UserPromptSubmit({ prompt: 'first' } as never)
+    const { beneath, deliver } = world(on)
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'first' } as never))
     const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
     expect(beneath.at(-1)?.mempalace_sharedbrain_mod).toBe('active')
     expect(result.additionalContext ?? []).toEqual([])

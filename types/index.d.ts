@@ -26,11 +26,24 @@ export type HubStatus = {
   isRetrying?: boolean
 }
 
+/** What the last prompt handed the model, held until the conversation shows it arrived. */
+export type Delivery = {
+  /** A unique line in the delivered context; finding it in the conversation confirms delivery. */
+  marker: string
+  /** Inbox cursor to record once delivered ('' when the sweep moved nothing). */
+  cursor: string
+  /** Watch cursor to record once the mail below is delivered. */
+  watchCursor: string
+  mail: InboxItem[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'mempalace-sharedbrain': {
       hub: HubStatus | null
       mail: InboxItem[]
+      pending: Delivery | null
+      watchSeen: string
     }
   }
 }

@@ -58,8 +58,9 @@ sweep and the wake check flag any task this machine cannot meet before anyone cl
 **Runs as a mod where Claude Code supports one.** The plugin carries a hooks module
 (`hooks/register.tsx`) beside its command hooks. On a Claude Code build that loads mods, the module
 makes the hub calls itself through `$.mcp.call`, with the session's own logged-in MCP connection, so
-no token and no hook-side transport are needed: it sweeps the inbox with the first prompt, records
-the cursor, and flags tasks this machine cannot meet. While listening is armed it checks every minute
+no token and no hook-side transport are needed: it sweeps the inbox with the first prompt and flags
+tasks this machine cannot meet. It records the cursor only once the conversation shows its message
+reached the model, so a dropped message is shown again rather than skipped. While listening is armed it checks every minute
 in the background, raises a toast and hands new mail over with the next prompt. The status line
 shows the identity, open tasks and new mail, and `/mempalace` opens a pane with the same. The
 module tags each event it passes down, and the command hooks beneath leave out what it now does.
