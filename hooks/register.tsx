@@ -48,6 +48,7 @@ type ModContext = {
   wake_limit: number
   version: string
   capabilities: Caps
+  presence: { enabled: boolean; wing: string; room: string; interval_minutes: number; drawer_id: string }
 }
 type HubEvent = {
   id?: string
@@ -424,6 +425,79 @@ async function notePeersRelevance($: Api, ctx: ModContext, server: string): Prom
   }
 }
 
+let lastCheckIn = 0
+
+/** The first line of a check-in drawer: everything `sessions` needs, inside the listing's preview. */
+export function checkInLine(ctx: ModContext, at: string): string {
+  const [host = '', , project = ''] = ctx.identity.split(':')
+  return `identity: ${ctx.identity} | checked_in ${at} | plugin ${ctx.version} mod | listening ${ctx.watch?.armed ? 'yes' : 'no'} | host ${host} | project ${project}`
+}
+
+/**
+ * Writes this identity's check-in: one drawer per identity in the presence room, updated in place, so
+ * /mempalace-sharedbrain:sessions reads one small listing instead of the event log. Best effort.
+ */
+async function checkIn($: Api, ctx: ModContext, server: string, cwd: string): Promise<void> {
+  const presence = ctx.presence
+  if (!presence?.enabled) return
+  const content = [
+    checkInLine(ctx, new Date().toISOString().replace(/\.\d+Z$/, 'Z')),
+    'Session check-in (mempalace-sharedbrain presence): which agents are on the hub and which identity to send work to. Updated in place while a session runs.',
+  ].join('\n')
+  try {
+    if (presence.drawer_id) {
+      try {
+        await callTool($, server, 'mempalace_update_drawer', { drawer_id: presence.drawer_id, content })
+        lastCheckIn = Date.now()
+        return
+      } catch (error) {
+        if (!/not found|no such|does not exist/i.test((error as Error).message)) throw error
+      }
+    }
+    const added = await callTool($, server, 'mempalace_add_drawer', { wing: presence.wing, room: presence.room, content, added_by: ctx.identity })
+    const id = String(added.drawer_id ?? '')
+    if (id) await python($, cwd, ['presence', 'set', id])
+    lastCheckIn = Date.now()
+  } catch (error) {
+    $.ui.log(`${PLUGIN}: check-in failed: ${clean((error as Error).message, 200)}`, { to: 'debug' })
+  }
+}
+
+type Presence = { identity: string; checkedIn: string; plugin: string; listening: string; project: string }
+
+/** Parses the first line of a check-in drawer's preview; null for anything else in the room. */
+export function parseCheckIn(preview: string): Presence | null {
+  const first = String(preview).split('\n')[0] ?? ''
+  const m = /^identity: (\S+) \| checked_in (\S+) \| plugin (.+?) \| listening (\S+) \| host \S* \| project (.*)$/.exec(first)
+  return m ? { identity: m[1] ?? '', checkedIn: m[2] ?? '', plugin: m[3] ?? '', listening: m[4] ?? '', project: m[5] ?? '' } : null
+}
+
+export function presenceTable(rows: Presence[], me: string, now: number, intervalMinutes: number): string {
+  const ago = (iso: string) => {
+    const minutes = Math.round((now - Date.parse(iso)) / 60_000)
+    if (!Number.isFinite(minutes)) return iso || 'unknown'
+    if (minutes < 60) return `${Math.max(minutes, 0)} min ago`
+    const hours = Math.round(minutes / 60)
+    return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+  }
+  const idleAfter = 3 * Math.max(intervalMinutes, 1) * 60_000
+  const sorted = [...rows].sort((a, b) => (a.checkedIn < b.checkedIn ? 1 : -1))
+  const width = Math.max(...sorted.map(r => r.identity.length), 8)
+  return [
+    'Sessions checked in to the hub (one row per identity, newest first):',
+    '',
+    ...sorted.map(r => {
+      const notes = [now - Date.parse(r.checkedIn) > idleAfter ? 'idle' : 'active']
+      if (r.identity === me) notes.push('this session')
+      if (r.listening === 'yes') notes.push('listening')
+      return `  ${r.identity.padEnd(width)}  ${ago(r.checkedIn).padEnd(12)}  ${r.plugin.padEnd(10)}  (${notes.join(', ')})`
+    }),
+    '',
+    `A session checks in with its first prompt and every ${intervalMinutes} minutes while it runs; "idle" means no check-in for ${3 * intervalMinutes} minutes.`,
+    'Send work to a host:harness:project identity. Every session in that project folder on that machine shares it.',
+  ].join('\n')
+}
+
 const SWEEP_TRIES = 3 // prompts; a claude.ai connector can still be connecting on the first one
 
 /** The sweep that opens a session: one attempt per prompt, kept inside the hook's time budget. */
@@ -443,6 +517,7 @@ async function firstSweep($: Api, ctx: ModContext, limitMs: number, isLastTry: b
     }
     const { server, done } = settled
     await notePeersRelevance($, ctx, server)
+    await checkIn($, ctx, server, await $.session.root())
     await update($, hub, () => ({ identity: ctx.identity, server, cursor: ctx.cursor, isListening: Boolean(ctx.watch?.armed), openTasks: done.open, checkedAt: Date.now(), error: '', isRetrying: false }))
     return { ok: true, text: done.text, lastId: done.lastId }
   } catch (error) {
@@ -478,9 +553,13 @@ export const register: Register = on => {
     timer = $.clock.every(POLL_MS, () => {
       void (async () => {
         try {
-          const ctx = await modContext($, await $.session.root())
-          if (!ctx.watch?.armed) return
+          const cwd = await $.session.root()
+          const ctx = await modContext($, cwd)
+          const isCheckInDue = lastCheckIn > 0 && Date.now() - lastCheckIn >= (ctx.presence?.interval_minutes ?? 30) * 60_000
+          if (!ctx.watch?.armed && !isCheckInDue) return
           const server = await findServer($, ctx.mcp_server)
+          if (isCheckInDue) await checkIn($, ctx, server, cwd)
+          if (!ctx.watch?.armed) return
           const added = await queueMail($, await pollWatch($, ctx, server))
           if (added) {
             $.ui.toast(`MemPalace: ${added} new coordination event${added === 1 ? '' : 's'} for ${ctx.identity}`)
@@ -607,6 +686,15 @@ export const register: Register = on => {
     try {
       const cwd = await $.session.root()
       const ctx = await modContext($, cwd)
+      if (ctx.presence?.enabled) {
+        const { value: listed } = await onServer($, ctx.mcp_server, name =>
+          callTool($, name, 'mempalace_list_drawers', { wing: ctx.presence.wing, room: ctx.presence.room, limit: 100 }))
+        const rows = ((listed.drawers as Array<{ content_preview?: string }> | undefined) ?? [])
+          .map(d => parseCheckIn(String(d.content_preview ?? '')))
+          .filter((r): r is Presence => r !== null)
+        if (rows.length) return { text: presenceTable(rows, ctx.identity, Date.now(), ctx.presence.interval_minutes) }
+      }
+      // No check-ins yet (or presence off): fall back to who has written to the event log.
       const { server, value: recent } = await onServer($, ctx.mcp_server, name => recentEvents($, name, 200))
       return { text: sessionsTable(recent, ctx.identity, server, Date.now()) }
     } catch (error) {

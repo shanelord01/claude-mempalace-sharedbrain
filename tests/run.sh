@@ -332,6 +332,14 @@ OUT="$("$SETUP" peers)"; RC=$?
 expect_eq "peers without a transport is not an error" "$RC" "0"
 expect_contains "peers without a transport says what to do" "$OUT" "call mempalace_mesh_peers through the session's MCP tools"
 
+expect_eq "presence empty at first" "$("$SETUP" presence get)" ""
+"$SETUP" presence set drawer_fleet_presence_abc >/dev/null
+expect_eq "presence remembers the drawer" "$("$SETUP" presence get)" "drawer_fleet_presence_abc"
+expect_contains "mod-context carries the presence drawer" "$("$SETUP" mod-context --cwd /tmp/demo)" '"drawer_id": "drawer_fleet_presence_abc"'
+"$SETUP" presence set "not a drawer" >/dev/null 2>&1; expect_eq "presence rejects a bad id" "$?" "1"
+"$SETUP" presence clear >/dev/null
+expect_eq "presence clear" "$("$SETUP" presence get)" ""
+
 echo "# mod"
 "$SETUP" init --transport none >/dev/null
 OUT="$("$SETUP" mod-context --cwd /tmp/demo)"

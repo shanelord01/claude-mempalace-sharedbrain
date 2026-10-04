@@ -67,6 +67,9 @@ directory is created readable by the current user only.
 | `capabilities.profile_drawer_id` | empty | This host's profile drawer on the hub. Set by `setup.sh capabilities published`, so later publishes update it in place. |
 | `capabilities.wing` / `capabilities.room` | `fleet` / `machines` | Where a new profile drawer is filed. |
 | `capabilities.custom` | `{}` | Extra capabilities: a map of name to a command (no shell) that exits 0 when the capability is present. Its output is discarded and never published, so a secret-store lookup is safe to use as a check. |
+| `presence.enabled` | `true` | Under the mod, check in to the hub so `/mempalace-sharedbrain:sessions` can list who is around. |
+| `presence.wing` / `presence.room` | `capabilities.wing` / `presence` | Where each identity's check-in drawer lives. |
+| `presence.interval_minutes` | `30` | How often a running session refreshes its check-in. A check-in older than three intervals shows as idle. |
 | `extra_context` | `[]` | Lines appended to the session-start block as written. For machine notes that must load every session and have no better home. |
 
 ## Four common setups
@@ -120,6 +123,7 @@ expires. Revoke a machine by deleting its client in the authorization server.
 | `pending/<session>.md` | Pre-compaction snapshot awaiting filing. |
 | `oauth/<key>.json` | Cached client-credentials access token and its expiry. |
 | `rules/<file>.<timestamp>` | The instruction file as it was before each `rules install --write`. |
+| `presence/<identity>.json` | This identity's check-in drawer id, so each check-in updates the same drawer. |
 | `capabilities.json` | The last full probe. Session start reuses it for six hours. |
 | `capabilities.published.json` | Hash and drawer id of the last publish, compared with each probe. |
 | `hook.log` | One line per hook run. Rotates at 1 MB. |

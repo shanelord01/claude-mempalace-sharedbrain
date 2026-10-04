@@ -30,6 +30,7 @@ STATE_DIR = os.environ.get("MEMPALACE_SHAREDBRAIN_STATE") or os.path.join(
 PENDING_DIR = os.path.join(STATE_DIR, "pending")
 CURSOR_DIR = os.path.join(STATE_DIR, "cursors")
 WATCH_DIR = os.path.join(STATE_DIR, "watch")
+PRESENCE_DIR = os.path.join(STATE_DIR, "presence")
 LOG_FILE = os.path.join(STATE_DIR, "hook.log")
 LOG_MAX_BYTES = 1024 * 1024
 
@@ -86,13 +87,19 @@ DEFAULTS = {
         "room": "machines",
         "custom": {},
     },
+    "presence": {
+        "enabled": True,
+        "wing": "",
+        "room": "presence",
+        "interval_minutes": 30,
+    },
     "extra_context": [],
 }
 
 
 def ensure_dirs():
     """State dirs, readable by this user only (snapshots hold conversation text)."""
-    for path in (STATE_DIR, PENDING_DIR, CURSOR_DIR, WATCH_DIR):
+    for path in (STATE_DIR, PENDING_DIR, CURSOR_DIR, WATCH_DIR, PRESENCE_DIR):
         os.makedirs(path, exist_ok=True)
         try:
             os.chmod(path, 0o700)
@@ -275,6 +282,19 @@ def clear_watch(ident):
         os.remove(watch_path(ident))
     except OSError:
         pass
+
+
+def presence_path(ident):
+    return os.path.join(PRESENCE_DIR, "%s.json" % identity_filename(ident))
+
+
+def read_presence(ident):
+    return _read_json(presence_path(ident))
+
+
+def write_presence(ident, drawer_id):
+    _write_json(presence_path(ident), {"identity": ident, "drawer_id": drawer_id,
+                                       "updated": time.strftime("%Y-%m-%dT%H:%M:%S")})
 
 
 def safe_id(value):

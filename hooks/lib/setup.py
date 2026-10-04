@@ -23,6 +23,7 @@
     setup.py capabilities plan          the facts and profile drawer to publish (the model makes the MCP calls)
     setup.py capabilities published HASH DRAWER_ID   record a completed publish
     setup.py capabilities check REQ...  does this machine meet requirements like xcode>=27 memory-gb>=32
+    setup.py presence get | set DRAWER_ID | clear [--cwd DIR]   this identity's check-in drawer
     setup.py mod-context [--cwd DIR]    one JSON object with what the mod needs (identity, cursor, watch, ...)
 
 init keeps any existing settings and changes only the flags you pass.
@@ -381,7 +382,34 @@ def cmd_mod_context(cfg, args):
         "wake_limit": cfg["wake"].get("limit", 50),
         "version": C.plugin_version(),
         "capabilities": caps,
+        "presence": {
+            "enabled": bool(cfg["presence"].get("enabled", True)),
+            "wing": cfg["presence"].get("wing") or (cfg.get("capabilities") or {}).get("wing") or "fleet",
+            "room": cfg["presence"].get("room") or "presence",
+            "interval_minutes": cfg["presence"].get("interval_minutes", 30),
+            "drawer_id": C.read_presence(ident).get("drawer_id", ""),
+        },
     }))
+    return 0
+
+
+def cmd_presence(cfg, args):
+    ident = C.identity(cfg, args.cwd)
+    if args.action == "get":
+        print(C.read_presence(ident).get("drawer_id", ""))
+        return 0
+    if args.action == "set":
+        if not args.drawer_id or not re.match(r"^drawer_[A-Za-z0-9_-]+$", args.drawer_id):
+            print("usage: presence set <drawer id>", file=sys.stderr)
+            return 1
+        C.write_presence(ident, args.drawer_id)
+        print("presence drawer for %s is now %s" % (ident, args.drawer_id))
+        return 0
+    try:
+        os.unlink(C.presence_path(ident))
+    except FileNotFoundError:
+        pass
+    print("presence drawer cleared for %s" % ident)
     return 0
 
 
@@ -453,6 +481,12 @@ def build_parser():
     p.add_argument("items", nargs="*")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_capabilities)
+
+    p = sub.add_parser("presence")
+    p.add_argument("action", choices=["get", "set", "clear"])
+    p.add_argument("drawer_id", nargs="?")
+    p.add_argument("--cwd")
+    p.set_defaults(func=cmd_presence)
 
     p = sub.add_parser("mod-context")
     p.add_argument("--cwd")

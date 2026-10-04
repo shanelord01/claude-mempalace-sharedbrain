@@ -4,9 +4,15 @@ description: List the agents on this MemPalace hub (host:harness:project identit
 
 # Sessions on the hub
 
-Where the plugin's mod is loaded it answers this command itself, from the hub's event log,
-without the model. Otherwise build the same list:
+Where the plugin's mod is loaded it answers this command itself, without the model: every
+session running the mod checks in to the hub (one drawer per identity in the presence room,
+updated with the first prompt and every 30 minutes), and the command lists those check-ins.
+Otherwise build the list:
 
+0. `mempalace_list_drawers` with the presence room (`bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" show`
+   names the wing; the room is `presence`). Each check-in's first line reads
+   `identity: <id> | checked_in <UTC time> | plugin <version> | listening <yes|no> | ...`. List them
+   newest first; one older than 90 minutes is idle. If the room is empty, use the event log:
 1. `mempalace_event_list` with `limit=100` and `preview=true` (newest first). Page back with
    `before_event_id=<oldest id seen>` once more if the first page covers less than a week.
 2. Group the events by `from_agent`. For each identity report: when it last wrote, how many

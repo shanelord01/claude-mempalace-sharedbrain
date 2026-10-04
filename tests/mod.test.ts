@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { itemLine, requiresOf, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
+import { itemLine, parseCheckIn, requiresOf, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -15,7 +15,7 @@ function context(over: Ctx = {}): Ctx {
   return {
     identity: ME, diary: 'office-desktop_claude_demo', cursor: 'evt_00', watch: {}, mcp_server: '',
     inbox_limit: 10, sweep: true, wake_types: ['task.request', 'task.reply', 'patch.ready'], wake_limit: 50,
-    version: '0.4.0', capabilities: { python: { present: true, version: '3.14.7' }, 'memory-gb': { present: true, version: '62' } },
+    version: '0.4.0', presence: { enabled: true, wing: 'fleet', room: 'presence', interval_minutes: 30, drawer_id: '' }, capabilities: { python: { present: true, version: '3.14.7' }, 'memory-gb': { present: true, version: '62' } },
     ...over,
   }
 }
@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[] } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -63,6 +63,10 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (opts.isUp && !opts.isUp()) return { value: { content: [{ type: 'text', text: 'no connected MCP tool' }], isError: true } }
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
     const a = e.args
+    const reply = (data: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(data) }], isError: false } })
+    if (e.tool === 'mempalace_add_drawer') return reply({ success: true, drawer_id: 'drawer_fleet_presence_new' })
+    if (e.tool === 'mempalace_update_drawer') return reply({ success: true, drawer_id: e.args.drawer_id })
+    if (e.tool === 'mempalace_list_drawers') return reply({ drawers: (opts.presence ?? []).map(p => ({ content_preview: p })) })
     if (e.tool === 'mempalace_mesh_peers') return { value: { content: [{ type: 'text', text: JSON.stringify({ peers: opts.meshPeers ?? [] }) }], isError: false } }
     let events: unknown[] = []
     if (a.writer === ME || a.from_agent === ME) events = [MY_ACK]
@@ -279,5 +283,44 @@ describe('peers in the menu', () => {
     world(on, { meshPeers: [{ name: 'peer-hub' }] })
     await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
     expect((await describePeers($ as never)).isHidden).toBe(false)
+  })
+})
+
+describe('presence', () => {
+  test('the first check adds this identity\'s check-in drawer and remembers it', async ($, on) => {
+    const { calls, mcp, deliver } = world(on)
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    const added = mcp.find(c => c.tool === 'mempalace_add_drawer')
+    expect(added?.args.room).toBe('presence')
+    expect(String(added?.args.content)).toContain(`identity: ${ME} | checked_in `)
+    expect(added?.args.added_by).toBe(ME)
+    expect(calls).toContainEqual(['presence', 'set', 'drawer_fleet_presence_new'])
+  })
+
+  test('a known drawer is updated in place', async ($, on) => {
+    const { mcp } = world(on, { ctx: context({ presence: { enabled: true, wing: 'fleet', room: 'presence', interval_minutes: 30, drawer_id: 'drawer_fleet_presence_mine' } }) })
+    await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    expect(mcp.some(c => c.tool === 'mempalace_update_drawer' && c.args.drawer_id === 'drawer_fleet_presence_mine')).toBe(true)
+    expect(mcp.some(c => c.tool === 'mempalace_add_drawer')).toBe(false)
+  })
+
+  test('sessions lists check-ins newest first and marks idle ones', async ($, on) => {
+    const fresh = new Date(Date.now() - 5 * 60_000).toISOString()
+    const old = new Date(Date.now() - 5 * 3600_000).toISOString()
+    world(on, { presence: [
+      `identity: mac-mini:claude:projects | checked_in ${old} | plugin 0.4.9 mod | listening no | host mac-mini | project projects`,
+      `identity: ${ME} | checked_in ${fresh} | plugin 0.4.9 mod | listening yes | host office-desktop | project demo`,
+      'some other drawer in the room',
+    ] })
+    const out = JSON.stringify(await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never))
+    expect(out).toContain('Sessions checked in to the hub')
+    expect(out.indexOf(ME)).toBeLessThan(out.indexOf('mac-mini:claude:projects'))
+    expect(out).toContain('active, this session, listening')
+    expect(out).toContain('(idle)')
+  })
+
+  test('parseCheckIn reads only check-in lines', () => {
+    expect(parseCheckIn('identity: a:b:c | checked_in 2026-10-04T10:00:00Z | plugin 0.4.9 mod | listening no | host a | project c')?.project).toBe('c')
+    expect(parseCheckIn('anything else')).toBeNull()
   })
 })
