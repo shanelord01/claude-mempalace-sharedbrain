@@ -168,7 +168,9 @@ async function callTool($: Api, server: string, tool: string, args: Record<strin
   try {
     return JSON.parse(text) as Record<string, unknown>
   } catch {
-    return { text }
+    // A reply that does not parse (cut short when it was too large, or not JSON) is an error, never
+    // an empty result: an empty inbox and an unreadable one must not look the same.
+    throw new Error(`${tool}: the reply could not be read (${text.length} characters, starting "${clean(text, 60)}")`)
   }
 }
 
@@ -229,6 +231,20 @@ async function ownEvents($: Api, server: string, ident: string): Promise<HubEven
     ownFilter = 'from_agent'
     return got
   }
+}
+
+/** The newest `total` events, read in pages of 40: one large reply can be cut short in transit. */
+async function recentEvents($: Api, server: string, total: number): Promise<HubEvent[]> {
+  const out: HubEvent[] = []
+  let before = ''
+  while (out.length < total) {
+    const page = await events($, server, { limit: Math.min(40, total - out.length), ...(before ? { before_event_id: before } : {}) })
+    if (!page.length) break
+    out.push(...page)
+    before = String(page.at(-1)?.id ?? '')
+    if (!before || page.length < 40) break
+  }
+  return out
 }
 
 type Sweep = { text: string; lastId: string; open: InboxItem[] }
@@ -591,7 +607,7 @@ export const register: Register = on => {
     try {
       const cwd = await $.session.root()
       const ctx = await modContext($, cwd)
-      const { server, value: recent } = await onServer($, ctx.mcp_server, name => events($, name, { limit: 200 }))
+      const { server, value: recent } = await onServer($, ctx.mcp_server, name => recentEvents($, name, 200))
       return { text: sessionsTable(recent, ctx.identity, server, Date.now()) }
     } catch (error) {
       return { text: `Could not read the hub: ${clean((error as Error).message, 200)}` }

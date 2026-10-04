@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[] } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -59,6 +59,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
   })
   on('mcp.call', async (_$: unknown, e: { server: string; tool: string; args: Record<string, unknown> }) => {
     mcp.push({ tool: e.tool, args: e.args })
+    if (opts.rawReply !== undefined) return { value: { content: [{ type: 'text', text: opts.rawReply }], isError: false } }
     if (opts.isUp && !opts.isUp()) return { value: { content: [{ type: 'text', text: 'no connected MCP tool' }], isError: true } }
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
     const a = e.args
@@ -69,7 +70,8 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     else if (a.since_event_id === 'evt_00') events = [TASK_NEEDS_XCODE]
     else if (a.since_event_id === 'evt_w1') events = opts.newMail ?? []
     else if (a.limit === 1) events = []
-    else if (a.limit === 200) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
+    else if (a.limit === 40 && !a.before_event_id) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
+    else if (a.before_event_id) events = []
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events, count: events.length }) }], isError: false } }
   })
   const deliver = (result: { additionalContext?: readonly string[] }) => conversation.push(...(result.additionalContext ?? []))
@@ -248,6 +250,12 @@ describe('sessions', () => {
     expect(rows[2]).toContain('unraid-hermes')
     expect(rows[2]).toContain('fixed or legacy name')
     expect(rows[2]).toContain('3 days ago')
+  })
+
+  test('an unreadable reply is an error, not an empty hub', async ($, on) => {
+    world(on, { rawReply: '{"events": [{"id": "evt_cut' })
+    const out = await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never)
+    expect(JSON.stringify(out)).toContain('could not be read')
   })
 
   test('the command answers from the hub without the model', async ($, on) => {
