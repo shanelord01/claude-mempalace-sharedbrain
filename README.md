@@ -62,7 +62,9 @@ no token and no hook-side transport are needed: it sweeps the inbox with the fir
 tasks this machine cannot meet. It records the cursor only once the conversation shows its message
 reached the model, so a dropped message is shown again rather than skipped. While listening is armed it checks every minute
 in the background, raises a toast and hands new mail over with the next prompt. The status line
-shows the identity, open tasks and new mail, and `/mempalace` opens a pane with the same. The
+shows the identity, open tasks and new mail. `/mempalace` opens a pane with the same and closes it
+again (`/mempalace open` and `/mempalace close` say which); Escape and the pane's Close button
+close it too. The
 module tags each event it passes down, and the command hooks beneath leave out what it now does.
 Where mods do not load (older builds, or a Claude Code plugin running in another harness through a
 bridge), the command hooks work as before.

@@ -45,6 +45,7 @@ declare module 'claude-code' {
       pending: Delivery | null
       watchSeen: string
       server: string
+      isPaneOpen: boolean
     }
   }
 }

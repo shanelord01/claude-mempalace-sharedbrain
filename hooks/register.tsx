@@ -29,6 +29,7 @@ const mail = atom({ plugin: 'mempalace-sharedbrain', key: 'mail' } as const, [] 
 const pending = atom({ plugin: 'mempalace-sharedbrain', key: 'pending' } as const, null as Delivery | null)
 const watchSeen = atom({ plugin: 'mempalace-sharedbrain', key: 'watchSeen' } as const, '')
 const knownServer = atom({ plugin: 'mempalace-sharedbrain', key: 'server' } as const, '')
+const isPaneOpen = atom({ plugin: 'mempalace-sharedbrain', key: 'isPaneOpen' } as const, false)
 
 type Caps = Record<string, { present: boolean; version: string }>
 type ModContext = {
@@ -387,7 +388,11 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     try {
-      await $.command.register({ name: 'mempalace', description: 'Open the MemPalace shared-brain pane: identity, open tasks, new mail' })
+      await $.command.register({
+        name: 'mempalace',
+        description: 'Open or close the MemPalace shared-brain pane: identity, open tasks, new mail',
+        argumentHint: '[open | close]',
+      })
     } catch {
       /* a host without commands still runs the rest */
     }
@@ -494,19 +499,36 @@ export const register: Register = on => {
   })
   on('classic.PreCompact', async ($, e, next) => next({ ...e, [MARK]: 'active' } as typeof e))
 
-  on('command.run', { command: 'mempalace' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'MemPalace shared brain' })
-    return { text: 'MemPalace pane opened.' }
+  // `/mempalace` toggles the pane; `/mempalace open` and `/mempalace close` say which. Escape closes it
+  // too (closeOnEscape), and so does the pane's own Close button.
+  on('command.run', { command: 'mempalace' }, async ($, e) => {
+    const asked = String(e.args ?? '').trim().toLowerCase()
+    const shouldClose = asked === 'close' || (asked !== 'open' && (await read($, isPaneOpen)))
+    if (shouldClose) {
+      await $.ui.close({ id: PANE })
+      await update($, isPaneOpen, () => false)
+      return { text: 'MemPalace pane closed.' }
+    }
+    await $.ui.open({ id: PANE, title: 'MemPalace shared brain', focus: true, closeOnEscape: true })
+    await update($, isPaneOpen, () => true)
+    return { text: 'MemPalace pane opened. Escape, the Close button or /mempalace close closes it.' }
+  })
+
+  // However the pane closes (Escape, its close mark, the Close button, an unload), remember it.
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) await update($, isPaneOpen, () => false)
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const state = await read($, hub) // not `h`: JSX compiles to the global h(), which a local `h` would hide
     const pending = await read($, mail)
     if (!state) {
       return (
         <Box flexDirection="column">
           <Text dimColor>No hub check yet in this session.</Text>
+          <Button key="close" label="Close" role="dismiss" onPress={() => $.ui.close({ id: PANE })} />
         </Box>
       )
     }
@@ -533,6 +555,8 @@ export const register: Register = on => {
             {item.type} from {item.from}: {item.excerpt}
           </Text>
         ))}
+        <Text> </Text>
+        <Button key="close" label="Close" role="dismiss" onPress={() => $.ui.close({ id: PANE })} />
       </Box>
     )
   })
