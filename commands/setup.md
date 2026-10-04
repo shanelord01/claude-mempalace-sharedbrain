@@ -18,7 +18,7 @@ If a config file already exists, confirm with the user before changing anything.
 ## 2. Agent id
 
 Every write to the palace is attributed to an agent id, and tasks are addressed to one. The
-convention is the machine's hostname, lowercase, hyphenated (for example `macbook-neo`,
+convention is the machine's hostname, lowercase, hyphenated (for example `work-laptop`,
 `office-desktop`). It must be unique across every machine that shares the palace. If
 `$ARGUMENTS` names one, use it. Otherwise propose the hostname-derived default from step 1 and
 ask the user to confirm or change it. Never reuse another machine's id.
