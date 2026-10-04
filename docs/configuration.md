@@ -55,6 +55,7 @@ directory is created readable by the current user only.
 | `hub.oauth.scope` | `mempalace:use` | Scope requested with the token. |
 | `hub.oauth.resource` | `hub.url` | The `resource` parameter (RFC 8707); the token's audience must match what the hub's proxy checks. |
 | `hub.stdio_command` | empty | Command for a stdio MCP server such as `mempalace-mcp`, which proxies to a local hub. The hook starts it, asks, stops it. |
+| `hub.mcp_server` | empty | The MemPalace MCP server's name as `/mcp` lists it, for the mod's `$.mcp.call`. Empty tries `claude.ai Mempalace`, `mempalace` and `plugin:mempalace:mempalace`. |
 | `hub.timeout_seconds` | `8` | Total time budget for one hook's hub traffic. |
 | `probe.enabled` | `true` | Do an inbox check at session start, by the hook or by asking the model. |
 | `probe.model_sweep` | `true` | With no hook-side path to the hub, ask the model to make the sweep calls itself at session start. `false` leaves it to the rules block's own cadence. |

@@ -325,6 +325,20 @@ print(x['present'], x.get('version'), b['present'], b.get('version'), [a['app'] 
 expect_contains "beta-named bundle still counts as xcode" "$OUT" "True 27.1 True 27.1"
 expect_contains "letter-suffixed release build is not a beta" "$OUT" "['Xcode-beta.app']"
 
+echo "# mod"
+"$SETUP" init --transport none >/dev/null
+OUT="$("$SETUP" mod-context --cwd /tmp/demo)"
+expect_contains "mod-context names the identity" "$OUT" '"identity": "office-desktop:claude:demo"'
+expect_contains "mod-context carries capabilities" "$OUT" '"python": {"present": true'
+expect_contains "mod-context carries the server setting" "$OUT" '"mcp_server": ""'
+OUT="$(echo '{"session_id":"m1","source":"startup","cwd":"/tmp/demo","mempalace_sharedbrain_mod":"active"}' | "$SS" | context_of)"
+expect_contains "session start keeps its block under the mod" "$OUT" "Identity for this session: office-desktop:claude:demo"
+expect_missing "session start leaves the sweep to the mod" "$OUT" "Inbox sweep (the hook has no path"
+"$SETUP" listen arm >/dev/null
+expect_eq "wake stands down under the mod" "$(echo '{"session_id":"m1","cwd":"/tmp/demo","prompt":"hi","mempalace_sharedbrain_mod":"active"}' | "$WAKE")" "{}"
+expect_contains "wake still runs without the mod" "$(echo '{"session_id":"m1","cwd":"/tmp/demo","prompt":"hi"}' | "$WAKE" | context_of)" "MEMPALACE WAKE CHECK"
+"$SETUP" listen disarm >/dev/null
+
 echo "# permissions"
 expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"
 expect_eq "config private" "$(stat -c %a "$TMP/config.json")" "600"

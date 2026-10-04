@@ -23,6 +23,7 @@
     setup.py capabilities plan          the facts and profile drawer to publish (the model makes the MCP calls)
     setup.py capabilities published HASH DRAWER_ID   record a completed publish
     setup.py capabilities check REQ...  does this machine meet requirements like xcode>=27 memory-gb>=32
+    setup.py mod-context [--cwd DIR]    one JSON object with what the mod needs (identity, cursor, watch, ...)
 
 init keeps any existing settings and changes only the flags you pass.
 """
@@ -354,6 +355,34 @@ def cmd_capabilities(cfg, args):
     return 0
 
 
+def cmd_mod_context(cfg, args):
+    """Everything local the mod needs, in one call, so the mod never reimplements identity,
+    cursor or watch state. Keys are stable; the mod reads them by name."""
+    import capabilities as K
+    ident = C.identity(cfg, args.cwd)
+    caps = {}
+    try:
+        result = K.current(cfg, quick=True)
+        caps = {name: {"present": c.get("present", False), "version": c.get("version") or ""}
+                for name, c in result.get("capabilities", {}).items()}
+    except Exception:
+        pass
+    print(json.dumps({
+        "identity": ident,
+        "diary": C.diary_name(ident),
+        "cursor": C.read_cursor(ident),
+        "watch": C.read_watch(ident),
+        "mcp_server": cfg["hub"].get("mcp_server") or "",
+        "inbox_limit": cfg["probe"].get("inbox_limit", 10),
+        "sweep": bool(cfg["probe"].get("enabled", True)),
+        "wake_types": cfg["wake"].get("types") or [],
+        "wake_limit": cfg["wake"].get("limit", 50),
+        "version": C.plugin_version(),
+        "capabilities": caps,
+    }))
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="setup", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -422,6 +451,10 @@ def build_parser():
     p.add_argument("items", nargs="*")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_capabilities)
+
+    p = sub.add_parser("mod-context")
+    p.add_argument("--cwd")
+    p.set_defaults(func=cmd_mod_context)
 
     p = sub.add_parser("vendor-check")
     p.add_argument("--update", action="store_true")

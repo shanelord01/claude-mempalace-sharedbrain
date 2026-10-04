@@ -65,6 +65,7 @@ DEFAULTS = {
         },
         "stdio_command": [],
         "timeout_seconds": 8,
+        "mcp_server": "",
     },
     "probe": {
         "enabled": True,
@@ -307,6 +308,15 @@ def plugin_version():
             return json.load(fh).get("version", "?")
     except (OSError, ValueError):
         return "?"
+
+
+MOD_MARK = "mempalace_sharedbrain_mod"
+
+
+def mod_active(payload):
+    """True when the plugin's mod (Claude Code function hooks) is loaded and has tagged this event:
+    it then makes the hub calls itself, so the command hooks leave those parts out."""
+    return bool(isinstance(payload, dict) and payload.get(MOD_MARK))
 
 
 def clean_line(value, limit):

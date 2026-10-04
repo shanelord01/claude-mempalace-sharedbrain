@@ -161,7 +161,12 @@ def main():
     parts.append("\n".join(header))
 
     transport = P.resolve_transport(cfg["hub"])
-    if source == "compact" or not cfg["probe"].get("enabled", True):
+    if C.mod_active(payload):
+        # The mod sweeps the inbox through the session's own MCP connection and adds its
+        # result to this event's context, after this block.
+        C.log("SESSION-START %s session %s identity %s: mod %s handles the sweep handoff=%s"
+              % (source, session_id, ident, payload.get(C.MOD_MARK), bool(handoff)))
+    elif source == "compact" or not cfg["probe"].get("enabled", True):
         C.log("SESSION-START %s session %s identity %s: probe skipped handoff=%s" % (source, session_id, ident, bool(handoff)))
     elif transport == "none":
         if cfg["probe"].get("model_sweep", True):

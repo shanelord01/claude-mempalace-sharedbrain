@@ -24,7 +24,7 @@ def main():
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     ident = C.identity(cfg, cwd)
     watch = C.read_watch(ident)
-    if not watch.get("armed"):
+    if C.mod_active(payload) or not watch.get("armed"):  # the mod runs the wake check itself
         C.emit({})
         return
 

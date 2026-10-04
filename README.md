@@ -55,6 +55,17 @@ date. A task names its requirements in `metadata.requires` or a `Requires:` line
 `xcode>=27, memory-gb>=32`. Delegation finds a host that meets them, and the inbox, the session-start
 sweep and the wake check flag any task this machine cannot meet before anyone claims it.
 
+**Runs as a mod where Claude Code supports one.** The plugin carries a hooks module
+(`hooks/register.tsx`) beside its command hooks. On a Claude Code build that loads mods, the module
+makes the hub calls itself through `$.mcp.call`, with the session's own logged-in MCP connection, so
+no token and no hook-side transport are needed: it sweeps the inbox with the first prompt, records
+the cursor, and flags tasks this machine cannot meet. While listening is armed it checks every minute
+in the background, raises a toast and hands new mail over with the next prompt. The status line
+shows the identity, open tasks and new mail, and `/mempalace` opens a pane with the same. The
+module tags each event it passes down, and the command hooks beneath leave out what it now does.
+Where mods do not load (older builds, or a Claude Code plugin running in another harness through a
+bridge), the command hooks work as before.
+
 **Commands.**
 
 | Command | Does |
