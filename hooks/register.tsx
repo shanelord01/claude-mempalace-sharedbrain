@@ -501,9 +501,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const h = await read($, hub)
+    const state = await read($, hub) // not `h`: JSX compiles to the global h(), which a local `h` would hide
     const pending = await read($, mail)
-    if (!h) {
+    if (!state) {
       return (
         <Box flexDirection="column">
           <Text dimColor>No hub check yet in this session.</Text>
@@ -512,14 +512,14 @@ export const register: Register = on => {
     }
     return (
       <Box flexDirection="column">
-        <Text bold>{h.identity}</Text>
+        <Text bold>{state.identity}</Text>
         <Text dimColor>
-          {h.error ? `Hub unreachable: ${h.error}` : `Server: ${h.server}   Cursor: ${h.cursor || 'none'}   ${h.isListening ? 'Listening' : 'Not listening'}`}
+          {state.error ? `Hub unreachable: ${state.error}` : `Server: ${state.server}   Cursor: ${state.cursor || 'none'}   ${state.isListening ? 'Listening' : 'Not listening'}`}
         </Text>
         <Text> </Text>
-        <Text bold>Open tasks ({h.openTasks.length})</Text>
-        {h.openTasks.length === 0 && <Text dimColor>None.</Text>}
-        {h.openTasks.map(item => (
+        <Text bold>Open tasks ({state.openTasks.length})</Text>
+        {state.openTasks.length === 0 && <Text dimColor>None.</Text>}
+        {state.openTasks.map(item => (
           <Text>
             {item.from}: {item.excerpt}
             {item.unmet.length ? `  (cannot meet: ${item.unmet.join(', ')})` : ''}

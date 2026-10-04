@@ -212,3 +212,18 @@ describe('wake check', () => {
     expect(result.additionalContext ?? []).toEqual([])
   })
 })
+
+describe('pane after a check', () => {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`shows the identity and the open tasks (${surface})`, async ($, on) => {
+      world(on)
+      await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+      const ui = await $.ui.mount({ plugin: 'mempalace-sharedbrain', surface, component: 'Pane', requestId: 'mempalace-hub',
+        props: { title: 'MemPalace shared brain', isFocused: false, bodyColumns: 80, placement: 'dock' } } as never)
+      expect(await ui.find({ text: ME })).toBeDefined()
+      expect(await ui.find({ text: /Open tasks \(1\)/ })).toBeDefined()
+      expect(await ui.find({ text: /Build the iOS app/ })).toBeDefined()
+      expect(await ui.find({ text: /cannot meet: xcode>=27/ })).toBeDefined()
+    })
+  }
+})
