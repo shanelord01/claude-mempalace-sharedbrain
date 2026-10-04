@@ -28,6 +28,7 @@ const hub = atom({ plugin: 'mempalace-sharedbrain', key: 'hub' } as const, null 
 const mail = atom({ plugin: 'mempalace-sharedbrain', key: 'mail' } as const, [] as InboxItem[])
 const pending = atom({ plugin: 'mempalace-sharedbrain', key: 'pending' } as const, null as Delivery | null)
 const watchSeen = atom({ plugin: 'mempalace-sharedbrain', key: 'watchSeen' } as const, '')
+const knownServer = atom({ plugin: 'mempalace-sharedbrain', key: 'server' } as const, '')
 
 type Caps = Record<string, { present: boolean; version: string }>
 type ModContext = {
@@ -154,7 +155,6 @@ async function modContext($: Api, cwd: string): Promise<ModContext> {
   return JSON.parse(out) as ModContext
 }
 
-let serverCache = ''
 
 async function callTool($: Api, server: string, tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const res = await $.mcp.call(server, tool, args)
@@ -167,19 +167,40 @@ async function callTool($: Api, server: string, tool: string, args: Record<strin
   }
 }
 
-async function findServer($: Api, configured: string): Promise<string> {
-  if (serverCache) return serverCache
+/** Server names to try, the one that last answered first (kept across reloads). */
+async function serverOrder($: Api, configured: string): Promise<string[]> {
+  if (configured) return [configured]
+  const known = await read($, knownServer)
+  return known ? [known, ...SERVER_CANDIDATES.filter(n => n !== known)] : SERVER_CANDIDATES
+}
+
+/** True for a refusal that means "not this server" rather than "this server failed". */
+function isWrongServer(message: string): boolean {
+  return /no connected MCP tool|no such server|not connected|unknown (mcp )?server|no server named/i.test(message)
+}
+
+/** Runs `work` against the first server that answers, remembering it. */
+async function onServer<T>($: Api, configured: string, work: (server: string) => Promise<T>): Promise<{ server: string; value: T }> {
   const tried: string[] = []
-  for (const name of configured ? [configured] : SERVER_CANDIDATES) {
+  for (const name of await serverOrder($, configured)) {
     try {
-      await callTool($, name, 'mempalace_event_list', { limit: 1, preview: true })
-      serverCache = name
-      return name
+      const value = await work(name)
+      if ((await read($, knownServer)) !== name) await update($, knownServer, () => name)
+      return { server: name, value }
     } catch (error) {
-      tried.push(`${name}: ${clean((error as Error).message, 80)}`)
+      const message = clean((error as Error).message, 120)
+      if (!isWrongServer(message)) throw error
+      tried.push(`${name}: ${message}`)
     }
   }
   throw new Error(`no MemPalace MCP server answered (${tried.join('; ')}). Set hub.mcp_server in the plugin config to its name as /mcp lists it.`)
+}
+
+async function findServer($: Api, configured: string): Promise<string> {
+  return (await onServer($, configured, async name => {
+    await callTool($, name, 'mempalace_event_list', { limit: 1, preview: true })
+    return name
+  })).server
 }
 
 async function events($: Api, server: string, args: Record<string, unknown>): Promise<HubEvent[]> {
@@ -201,12 +222,15 @@ async function sweep($: Api, ctx: ModContext, server: string): Promise<Sweep> {
   const ident = ctx.identity
   const caps = ctx.capabilities ?? {}
   const lines: string[] = []
-  const recent = ctx.cursor
-    ? await events($, server, { to_agent: ident, since_event_id: ctx.cursor })
-    : await events($, server, { to_agent: ident, limit: ctx.inbox_limit })
+  // Three independent reads, in parallel: the sweep costs about one round trip to the hub.
+  const [recent, open, mine] = await Promise.all([
+    ctx.cursor
+      ? events($, server, { to_agent: ident, since_event_id: ctx.cursor })
+      : events($, server, { to_agent: ident, limit: ctx.inbox_limit }),
+    events($, server, { to_agent: ident, type: 'task.request', status: 'open', limit: 20 }),
+    ownEvents($, server, ident),
+  ])
   const lastId = ctx.cursor ? String(recent.at(-1)?.id ?? '') : String(recent[0]?.id ?? '')
-  const open = await events($, server, { to_agent: ident, type: 'task.request', status: 'open', limit: 20 })
-  const mine = await ownEvents($, server, ident)
   const acked = new Set(mine.map(e => String((e.metadata ?? {}).ack_of ?? '')).filter(Boolean))
   const unacked = open.filter(e => e.from_agent !== ident && !acked.has(String(e.id))).map(e => toItem(e, caps))
 
@@ -317,10 +341,11 @@ const SWEEP_TRIES = 3 // prompts; a claude.ai connector can still be connecting 
 async function firstSweep($: Api, ctx: ModContext, limitMs: number, isLastTry: boolean): Promise<{ ok: boolean; text: string; lastId: string }> {
   let lastError = ''
   try {
-    const attempt = (async () => {
-      const server = await findServer($, ctx.mcp_server)
-      return { server, done: await sweep($, ctx, server) }
-    })()
+    const startedAt = Date.now()
+    const attempt = onServer($, ctx.mcp_server, server => sweep($, ctx, server)).then(r => {
+      $.ui.log(`${PLUGIN}: inbox sweep through "${r.server}" took ${Date.now() - startedAt} ms`, { to: 'debug' })
+      return { server: r.server, done: r.value }
+    })
     const timeout = $.clock.sleep(Math.max(500, limitMs)).then(() => null)
     const settled = await Promise.race([attempt, timeout])
     if (!settled) {
@@ -332,7 +357,6 @@ async function firstSweep($: Api, ctx: ModContext, limitMs: number, isLastTry: b
     return { ok: true, text: done.text, lastId: done.lastId }
   } catch (error) {
     lastError = clean((error as Error).message, 300)
-    serverCache = ''
   }
   await update($, hub, () => ({ identity: ctx.identity, server: '', cursor: ctx.cursor, isListening: false, openTasks: [], checkedAt: Date.now(), error: lastError, isRetrying: !isLastTry }))
   if (!isLastTry) {

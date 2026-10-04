@@ -44,6 +44,7 @@ declare module 'claude-code' {
       mail: InboxItem[]
       pending: Delivery | null
       watchSeen: string
+      server: string
     }
   }
 }
