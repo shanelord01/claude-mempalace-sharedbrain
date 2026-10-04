@@ -1,6 +1,6 @@
 {
   "name": "mempalace-sharedbrain",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Makes every Claude Code session start from its MemPalace memory: checks the palace, the task inbox and the canonical drawers before work begins, reminds the model to checkpoint, and snapshots the conversation before compaction. Works with a shared hub or a local palace.",
   "author": {
     "name": "shanelord01",

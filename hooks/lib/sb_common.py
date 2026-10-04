@@ -48,7 +48,24 @@ DEFAULTS = {
 
 
 def ensure_dirs():
+    """State dir and pending dir, readable by this user only (snapshots hold conversation text)."""
     os.makedirs(PENDING_DIR, exist_ok=True)
+    for path in (STATE_DIR, PENDING_DIR):
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+
+
+def open_private(path, mode="w"):
+    """Open a file for writing that only this user can read, whatever the umask."""
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if "a" in mode else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    return os.fdopen(fd, mode)
 
 
 def rotate_log():
@@ -62,7 +79,7 @@ def rotate_log():
 def log(message):
     try:
         ensure_dirs()
-        with open(LOG_FILE, "a") as fh:
+        with open_private(LOG_FILE, "a") as fh:
             fh.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
     except OSError:
         pass
@@ -99,7 +116,7 @@ def save_config(cfg):
     clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
-    with open(tmp, "w") as fh:
+    with open_private(tmp, "w") as fh:
         json.dump(clean, fh, indent=2, sort_keys=True)
         fh.write("\n")
     os.replace(tmp, CONFIG_FILE)

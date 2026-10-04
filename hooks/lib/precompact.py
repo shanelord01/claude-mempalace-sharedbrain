@@ -43,9 +43,9 @@ def main():
 
     path = os.path.join(C.PENDING_DIR, "%s.md" % session_id)
     header = T.snapshot_header(session_id, trigger, transcript, start, n_lines)
-    with open(path, "a" if os.path.exists(path) else "w") as fh:
+    with C.open_private(path, "a" if os.path.exists(path) else "w") as fh:
         fh.write(header + text + "\n")
-    with open(marker, "w") as fh:
+    with C.open_private(marker, "w") as fh:
         fh.write(str(n_lines))
     C.log("PRE-COMPACT %s session %s: snapshot lines %d-%d (%d chars) -> %s" % (
         trigger, session_id, start, n_lines, len(text), path))
