@@ -120,6 +120,7 @@ def handle(message):
 class Handler(BaseHTTPRequestHandler):
     token = None
     sse = False
+    oauth_secret = None
 
     def log_message(self, *_args):
         pass
@@ -150,6 +151,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def do_POST(self):
+        if self.path == "/api/oidc/token":
+            length = int(self.headers.get("Content-Length") or 0)
+            from urllib.parse import parse_qs
+            form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode("utf-8")).items()}
+            if form.get("grant_type") != "client_credentials" or form.get("client_secret") != (self.oauth_secret or ""):
+                self._send(401, json.dumps({"error": "invalid_client"}))
+                return
+            self._send(200, json.dumps({"access_token": self.token or "cc-token", "token_type": "Bearer",
+                                        "expires_in": 3600, "resource": form.get("resource"), "scope": form.get("scope")}))
+            return
         if not self._authorised():
             self._send(401, "", "text/plain",
                        {"WWW-Authenticate": 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource"'})
@@ -193,6 +204,7 @@ def main():
     parser.add_argument("--token")
     parser.add_argument("--sse", action="store_true")
     parser.add_argument("--no-writer", action="store_true", help="older hub: event_list has no writer param")
+    parser.add_argument("--oauth-secret", help="serve a client-credentials token endpoint at /api/oidc/token accepting this secret")
     parser.add_argument("--stdio", action="store_true")
     args = parser.parse_args()
     WRITER_PARAM = not args.no_writer
@@ -201,6 +213,7 @@ def main():
         return
     Handler.token = args.token
     Handler.sse = args.sse
+    Handler.oauth_secret = args.oauth_secret
     server = HTTPServer(("127.0.0.1", args.http or 0), Handler)
     print("listening on %d" % server.server_address[1], flush=True)
     server.serve_forever()

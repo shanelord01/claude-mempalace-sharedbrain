@@ -10,6 +10,7 @@ the hooks must always complete.
 
     python3 hooks/lib/sb_probe.py            # what the SessionStart hook sees
 """
+import hashlib
 import json
 import os
 import select
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -31,27 +33,122 @@ class ProbeError(Exception):
     pass
 
 
+def _run_secret_command(command, timeout, label):
+    argv = shlex.split(command) if isinstance(command, str) else list(command)
+    if not argv:
+        raise ProbeError("%s is empty" % label)
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProbeError("%s failed: %s" % (label, exc))
+    if proc.returncode != 0:
+        raise ProbeError("%s exited %d" % (label, proc.returncode))
+    value = proc.stdout.strip()
+    if not value:
+        raise ProbeError("%s printed nothing" % label)
+    return value
+
+
+def _oauth_configured(hub):
+    oauth = hub.get("oauth") or {}
+    return bool(oauth.get("client_id") and (oauth.get("issuer") or oauth.get("token_url")))
+
+
+def _oauth_cache_path(oauth):
+    key = hashlib.sha256(("%s|%s|%s" % (oauth.get("issuer") or oauth.get("token_url"), oauth.get("client_id"),
+                                       oauth.get("resource"))).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(C.STATE_DIR, "oauth", key + ".json")
+
+
+def _discover_token_endpoint(oauth, timeout):
+    if oauth.get("token_url"):
+        return oauth["token_url"]
+    issuer = (oauth.get("issuer") or "").rstrip("/")
+    code, body = http_get(issuer + "/.well-known/openid-configuration", timeout=timeout)
+    if code != 200:
+        raise ProbeError("OIDC discovery at %s failed (HTTP %s)" % (issuer, code or body))
+    try:
+        endpoint = json.loads(body).get("token_endpoint")
+    except ValueError:
+        endpoint = None
+    if not endpoint:
+        raise ProbeError("OIDC discovery at %s has no token_endpoint" % issuer)
+    return endpoint
+
+
+def client_credentials_token(hub):
+    """An access token for the hub via the OAuth client credentials grant, cached until expiry.
+
+    Pocket ID, Keycloak and any RFC 6749 authorization server accept this: a confidential client
+    (id plus secret) asks the token endpoint for a token with the hub as `resource` (RFC 8707) and
+    the hub's scope. The resulting JWT passes the same check as a user's login token, so a hub
+    behind an OAuth proxy needs no static token lane for scripts.
+    """
+    oauth = hub["oauth"]
+    timeout = float(hub.get("timeout_seconds") or 8)
+    cache_path = _oauth_cache_path(oauth)
+    try:
+        with open(cache_path) as fh:
+            cached = json.load(fh)
+        if cached.get("access_token") and float(cached.get("expires_at", 0)) - 60 > time.time():
+            return cached["access_token"]
+    except (OSError, ValueError):
+        pass
+
+    secret = ""
+    if oauth.get("client_secret_env") and os.environ.get(oauth["client_secret_env"]):
+        secret = os.environ[oauth["client_secret_env"]]
+    elif oauth.get("client_secret_command"):
+        secret = _run_secret_command(oauth["client_secret_command"], timeout, "oauth.client_secret_command")
+    if not secret:
+        raise ProbeError("oauth.client_id is set but no client secret source is configured")
+
+    endpoint = _discover_token_endpoint(oauth, timeout)
+    form = {"grant_type": "client_credentials", "client_id": oauth["client_id"], "client_secret": secret}
+    if oauth.get("scope"):
+        form["scope"] = oauth["scope"]
+    if oauth.get("resource") or hub.get("url"):
+        form["resource"] = oauth.get("resource") or hub.get("url")
+    req = urllib.request.Request(endpoint, data=urllib.parse.urlencode(form).encode("utf-8"),
+                                 headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = " " + exc.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            pass
+        raise ProbeError("token endpoint %s answered HTTP %d%s" % (endpoint, exc.code, detail))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise ProbeError("token endpoint %s unreachable: %s" % (endpoint, getattr(exc, "reason", exc)))
+    token = payload.get("access_token")
+    if not token:
+        raise ProbeError("token endpoint returned no access_token")
+    expires_in = float(payload.get("expires_in") or 300)
+    try:
+        C.ensure_dirs()
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        os.chmod(os.path.dirname(cache_path), 0o700)
+        with C.open_private(cache_path, "w") as fh:
+            json.dump({"access_token": token, "expires_at": time.time() + expires_in}, fh)
+    except OSError:
+        pass
+    return token
+
+
 def resolve_token(hub):
+    """Bearer token for the hub: env var, then token_command, then the client credentials grant."""
     env_name = hub.get("token_env") or ""
     if env_name and os.environ.get(env_name):
         return os.environ[env_name]
-    command = hub.get("token_command") or ""
-    if not command:
-        return ""
-    argv = shlex.split(command) if isinstance(command, str) else list(command)
-    if not argv:
-        raise ProbeError("token_command is empty")
-    try:
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=float(hub.get("timeout_seconds") or 8))
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ProbeError("token_command failed: %s" % exc)
-    if proc.returncode != 0:
-        raise ProbeError("token_command exited %d" % proc.returncode)
-    token = proc.stdout.strip()
-    if not token:
-        raise ProbeError("token_command printed nothing")
-    return token
+    if hub.get("token_command"):
+        return _run_secret_command(hub["token_command"], float(hub.get("timeout_seconds") or 8), "token_command")
+    if _oauth_configured(hub):
+        return client_credentials_token(hub)
+    return ""
 
 
 def resolve_transport(hub):

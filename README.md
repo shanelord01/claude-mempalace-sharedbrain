@@ -27,16 +27,18 @@ use another convention.
 resumed with `since_event_id`, never a timestamp. The plugin stores it per identity, shows it at
 session start, and the inbox command records it.
 
-**Checks the hub at session start.** With a transport of its own, the SessionStart hook reads the
-hub's `/healthz`, calls `mempalace_status`, lists events addressed to this identity since the
-cursor, and lists open task requests this identity has not acknowledged, before the model gets
-the first prompt. Event bodies are shown as excerpts and labelled as data.
+**Sweeps the inbox at session start.** By default the SessionStart hook tells the model exactly
+which `mempalace_event_list` calls to make, from the stored cursor, before the first task. With a
+hook-side path to the hub it makes them itself: `/healthz`, `mempalace_status`, events since the
+cursor, open task requests this identity has not acknowledged, placed in context before the first
+prompt. Event bodies are shown as excerpts and labelled as data.
 
 **Wakes the session on coordination events** (guide, section 7). A chat session has no
 background loop and a remote client should not run `mempalace logstream watch`. When the user
 arms listening, each prompt triggers one sweep since the watch cursor for the armed event types,
-excluding the identity's own events, and matches appear in the model's context. Arming prints the
-announcement the protocol asks for, and disarming prints the declared-idle statement.
+excluding the identity's own events: run by the hook when it has a path to the hub, otherwise
+requested of the model in that turn. Arming prints the announcement the protocol asks for, and
+disarming prints the declared-idle statement.
 
 **Keeps saves working for a remote client.** MemPalace's Stop and PreCompact hooks save through
 the local package, which a hub client does not have. Here the Stop hook asks the model, in
@@ -79,16 +81,23 @@ From a shell the same steps are `scripts/setup.sh init`, `scripts/setup.sh rules
 and `scripts/setup.sh probe`. Every key is in [docs/configuration.md](docs/configuration.md).
 Update later with `claude plugin update mempalace-sharedbrain@shanelord01`.
 
-## How the hook reaches the hub
+## No credentials needed
 
-The model reaches the hub through its MCP server. The hooks run before the model exists, so the
-live check and the wake check need their own path, chosen in `setup`:
+The model reaches the hub through its logged-in MCP server, and that is the only connection the
+plugin relies on. By default the hooks hold no credential at all. They compute what the model
+cannot know on its own (identity, cursor, watch state, rules-block status) and, where a hub call
+is due, ask the model to make that one call through its own server in the same turn: the inbox
+sweep at session start, and the wake check on each prompt while listening is armed.
+
+Optionally the hooks can read the hub themselves, so the session-start check and the wake check
+run before the model is involved and cost it nothing. `setup` offers three paths:
 
 - the hub's HTTP endpoint with its static bearer token, read from an environment variable or a
-  command such as a keychain lookup.
-- a local `mempalace-mcp`, which proxies to a hub on the same machine;
-- none, for a hub that only accepts OAuth logins. The rules block, identity, cursor and posture
-  still load every session. The model runs the sweeps itself.
+  command such as a keychain lookup (the setup MemPalace's remote-server guide describes);
+- the OAuth client credentials grant against the hub's authorization server, for a hub behind an
+  OAuth login: a confidential client per machine, its secret in the keyring, the access token
+  cached until it expires, no static hub token on any machine;
+- a local `mempalace-mcp`, which proxies to a hub on the same machine.
 
 ## Hosting a hub
 

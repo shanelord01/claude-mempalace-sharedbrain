@@ -46,17 +46,22 @@ claude mcp add --transport http --scope user mempalace https://hub.example.com/m
 
 For a hub behind an OAuth login, the same without `--header`, then `/mcp` and Authenticate.
 
-## 4. The hook's path to the hub
+## 4. Whether the hooks read the hub themselves
 
-The hooks run before the model exists, so the live check and the wake check need their own
-path. Pick one with the user:
+By default they do not, and no credential is involved: the model's logged-in MCP server makes
+every hub call, and the hooks tell it which calls to make and when. That is `--transport none`
+and is complete as it stands.
 
-- HTTP hub with its static bearer token: `--url <hub>/mcp` plus `--token-env NAME` (the hook
-  reads that variable) or `--token-command "<command that prints the token>"` (a keychain or
-  secret-store lookup, so the token never enters the config file).
+Offer the optional hook-side path only if the user wants the session-start check and the wake
+check to run before the model is involved:
+
+- Hub with its static bearer token: `--url <hub>/mcp` plus `--token-env NAME` or
+  `--token-command "<command that prints the token>"` (a keychain or secret-store lookup, so the
+  token never enters the config file).
+- Hub behind an OAuth login: `--url <hub>/mcp --token-env ""`, then `set hub.oauth.issuer`,
+  `set hub.oauth.client_id` and `set hub.oauth.client_secret_command` for a confidential client
+  registered for this machine with client access to the hub's API. See docs/configuration.md.
 - A local `mempalace-mcp` that proxies to a local hub: `--stdio-command "mempalace-mcp"`.
-- A hub that only accepts OAuth logins: `--transport none`. The hook cannot borrow the model's
-  OAuth token, so the live check and the wake check are off and the model does the sweeps itself.
 
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" init <transport flags>
@@ -64,7 +69,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" probe
 ```
 
 A reachable hub prints its drawer count and the open tasks addressed to this identity. A 401
-means the token is missing or wrong, or the hub is OAuth-only.
+means the token is missing or wrong.
 
 ## 5. The rules block
 

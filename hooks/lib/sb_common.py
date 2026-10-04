@@ -54,12 +54,22 @@ DEFAULTS = {
         "url": "",
         "token_env": "MEMPALACE_MCP_HTTP_TOKEN",
         "token_command": "",
+        "oauth": {
+            "issuer": "",
+            "token_url": "",
+            "client_id": "",
+            "client_secret_env": "",
+            "client_secret_command": "",
+            "scope": "mempalace:use",
+            "resource": "",
+        },
         "stdio_command": [],
         "timeout_seconds": 8,
     },
     "probe": {
         "enabled": True,
         "inbox_limit": 10,
+        "model_sweep": True,
     },
     "wake": {
         "types": ["task.request", "task.reply", "patch.ready"],

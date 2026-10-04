@@ -28,15 +28,17 @@ Then post the announcement the command prints, once, with `mempalace_event_appen
 `type=status`, `room=status`, `to_agent=*`, `correlation_id` if the watch is for one task,
 `from_agent=<identity>`. Re-announce only if the filter changes.
 
-If the command says the hook has no transport to the hub, the wake check cannot run. Say so to the
-user and, per the protocol for remote clients, loop on `mempalace_event_wait` in-turn carrying
-`since_event_id` while you wait on a known correlation.
+If the hook has no path of its own to the hub, each prompt instead places the exact
+`mempalace_event_list` call in your context for you to make through the logged-in MCP server,
+and you advance the watch cursor afterwards with `setup.sh listen cursor <last event id>`. While
+waiting on one known correlation, `mempalace_event_wait` in-turn is the protocol's complement.
 
 ## When a wake arrives
 
-The context shows the matched events as excerpts. Fetch each in full with `mempalace_event_list`
-(by `correlation_id`), report to the user, act only on a go-ahead, ack what you take on, and
-record your inbox cursor (`setup.sh cursor set <id>`). The watch cursor advanced already.
+The context shows the matched events as excerpts, or the result of the call you made. Fetch each
+in full with `mempalace_event_list` (by `correlation_id`), report to the user, act only on a
+go-ahead, ack what you take on, and record your inbox cursor (`setup.sh cursor set <id>`). The
+watch cursor advanced already when the hook ran the sweep; advance it yourself when you did.
 
 ## Disarm
 

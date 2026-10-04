@@ -13,6 +13,7 @@
     setup.py probe                      what the SessionStart hook will see
     setup.py cursor get | set EVENT_ID | clear
     setup.py listen arm [--type T ...] [--correlation-id ID] [--topic T] [--from EVENT_ID]
+    setup.py listen cursor EVENT_ID     advance the watch cursor (the model does this after a sweep it ran itself)
     setup.py listen disarm | status
     setup.py peers                      mempalace_mesh_peers and /statusz
     setup.py rules render|check|install [--write] [--host ..] [--project ..] [--mcp ..] [--target ..]
@@ -180,6 +181,19 @@ def cmd_listen(cfg, args):
         watch = C.read_watch(ident)
         print(json.dumps(watch or {"armed": False, "identity": ident}, indent=2))
         return 0
+    if args.action == "cursor":
+        watch = C.read_watch(ident)
+        if not watch.get("armed"):
+            print("listening is not armed for %s" % ident, file=sys.stderr)
+            return 1
+        event_id = (args.since or "").strip()
+        if not re.fullmatch(r"evt_[A-Za-z0-9_.\-]+", event_id):
+            print("listen cursor needs an event id like evt_20260101T000000_abcdef012345 (pass it with --from or as the next argument)", file=sys.stderr)
+            return 1
+        watch["since_event_id"] = event_id
+        C.write_watch(ident, watch)
+        print("watch cursor for %s is now %s" % (ident, event_id))
+        return 0
     if args.action == "disarm":
         C.clear_watch(ident)
         print("listening disarmed for %s" % ident)
@@ -201,8 +215,9 @@ def cmd_listen(cfg, args):
         (", correlation %s" % args.correlation_id) if args.correlation_id else "",
         (", topic %s" % args.topic) if args.topic else "", since or "(start)"))
     if transport == "none":
-        print("NOTE: the hook has no transport to the hub, so the per-prompt wake check cannot run. "
-              "Loop on mempalace_event_wait in-turn and carry since_event_id, as the protocol says for remote clients.")
+        print("NOTE: the hook has no transport to the hub, so each prompt will ask the model to make the sweep "
+              "itself through the logged-in MCP server and to advance the watch cursor with `listen cursor <id>`. "
+              "While waiting on one known correlation, mempalace_event_wait in-turn is the protocol's complement.")
     print()
     print("Announcement to post once (type=status, room=status, to_agent=*%s):" % (
         (", correlation_id=%s" % args.correlation_id) if args.correlation_id else ""))
@@ -212,6 +227,12 @@ def cmd_listen(cfg, args):
         (" on topic %s" % args.topic) if args.topic else ""))
     print("Cursor after: %s" % (since or "(start)"))
     return 0
+
+
+def cmd_listen_entry(cfg, args):
+    if args.action == "cursor" and args.event_id and not args.since:
+        args.since = args.event_id
+    return cmd_listen(cfg, args)
 
 
 def cmd_peers(cfg, _args):
@@ -320,12 +341,13 @@ def build_parser():
     p.set_defaults(func=cmd_cursor)
 
     p = sub.add_parser("listen")
-    p.add_argument("action", choices=["arm", "disarm", "status"])
+    p.add_argument("action", choices=["arm", "disarm", "status", "cursor"])
+    p.add_argument("event_id", nargs="?", help="for `listen cursor`: the event id to advance the watch cursor to")
     p.add_argument("--type", action="append")
     p.add_argument("--correlation-id")
     p.add_argument("--topic")
     p.add_argument("--from", dest="since", help="watch cursor to start from (default: the newest event, like a first `logstream watch`)")
-    p.set_defaults(func=cmd_listen)
+    p.set_defaults(func=cmd_listen_entry)
 
     p = sub.add_parser("rules")
     p.add_argument("action", choices=["render", "check", "install"])

@@ -96,7 +96,7 @@ expect_contains "rules block reported current" "$OUT" "it is current"
 expect_contains "wake-up points at mempalace_status" "$OUT" "call mempalace_status first"
 expect_contains "declared-idle posture" "$OUT" "declared-idle"
 expect_contains "no cursor yet" "$OUT" "none recorded yet"
-expect_contains "probe skipped" "$OUT" "Live check: skipped"
+expect_contains "no transport: model asked to sweep" "$OUT" "Inbox sweep (the hook has no path"
 expect_missing "no protocol restatement" "$OUT" "Quote results verbatim"
 rm -f "$CLAUDE_MD"
 OUT="$(echo '{"session_id":"t1","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
@@ -212,6 +212,49 @@ expect_contains "from_agent fallback still finds own acks" "$OUT" "3, of which 2
 stop_hub
 expect_contains "dead hub reported, not raised" "$("$SETUP" probe 2>&1)" "FAILED, cannot reach"
 
+echo "# oauth client credentials (no static token anywhere)"
+start_hub --token cc-token --oauth-secret s3cret
+"$SETUP" init --transport http --url "http://127.0.0.1:$PORT/mcp" --token-env "" --token-command "" >/dev/null
+"$SETUP" set hub.oauth.token_url "http://127.0.0.1:$PORT/api/oidc/token" >/dev/null
+"$SETUP" set hub.oauth.client_id hooks-client >/dev/null
+"$SETUP" set hub.oauth.client_secret_env MP_CLIENT_SECRET >/dev/null
+OUT="$(MP_CLIENT_SECRET=s3cret "$SETUP" probe 2>&1)"
+expect_contains "client credentials token reaches the hub" "$OUT" "hub reachable"
+[ -n "$(ls "$TMP/state/oauth" 2>/dev/null)" ] && ok "access token cached" || bad "access token cached"
+expect_eq "token cache is private" "$(stat -c %a "$TMP"/state/oauth/*.json)" "600"
+OUT="$(MP_CLIENT_SECRET=wrong "$SETUP" probe 2>&1)"
+expect_contains "cached token still used with a wrong secret (not expired)" "$OUT" "hub reachable"
+rm -f "$TMP"/state/oauth/*.json
+OUT="$(MP_CLIENT_SECRET=wrong "$SETUP" probe 2>&1)"
+expect_contains "wrong secret reports the token endpoint" "$OUT" "token endpoint"
+expect_contains "wrong secret shows the server's error" "$OUT" "invalid_client"
+"$SETUP" set hub.oauth.client_id '""' >/dev/null
+"$SETUP" set hub.oauth.token_url '""' >/dev/null
+stop_hub
+
+echo "# no transport: the model makes the calls"
+"$SETUP" init --transport none >/dev/null
+OUT="$(echo '{"session_id":"t6","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_contains "session start asks the model to sweep" "$OUT" "Inbox sweep (the hook has no path"
+expect_contains "sweep names the identity" "$OUT" "to_agent=office-desktop:claude:demo, preview=true, limit=10"
+"$SETUP" cursor set evt_04_broadcast >/dev/null
+OUT="$(echo '{"session_id":"t6","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_contains "sweep resumes from the cursor" "$OUT" "since_event_id=evt_04_broadcast"
+"$SETUP" cursor clear >/dev/null
+"$SETUP" set probe.model_sweep false >/dev/null
+OUT="$(echo '{"session_id":"t6","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_contains "model sweep can be turned off" "$OUT" "Live check: off"
+"$SETUP" set probe.model_sweep true >/dev/null
+"$SETUP" listen arm --from evt_02_task_acked >/dev/null
+OUT="$(echo '{"session_id":"t6","cwd":"/tmp/demo","prompt":"hi"}' | "$WAKE" | context_of)"
+expect_contains "wake asks the model to sweep when armed" "$OUT" "MEMPALACE WAKE CHECK"
+expect_contains "wake sweep resumes from the watch cursor" "$OUT" "since_event_id=evt_02_task_acked"
+"$SETUP" listen cursor evt_06_reply_blocked >/dev/null
+expect_contains "listen cursor advances the watch cursor" "$("$SETUP" listen status)" '"since_event_id": "evt_06_reply_blocked"'
+"$SETUP" listen cursor bogus >/dev/null 2>&1; expect_eq "listen cursor rejects a bad id" "$?" "1"
+"$SETUP" listen disarm >/dev/null
+expect_eq "wake silent once disarmed" "$(echo '{"session_id":"t6","cwd":"/tmp/demo","prompt":"hi"}' | "$WAKE")" "{}"
+
 echo "# stdio"
 "$SETUP" init --transport stdio --stdio-command "$PY $ROOT/tests/fake_hub.py --stdio" >/dev/null
 expect_contains "stdio transport works" "$("$SETUP" probe 2>&1)" "Live check (stdio"
@@ -219,8 +262,7 @@ expect_contains "stdio transport works" "$("$SETUP" probe 2>&1)" "Live check (st
 expect_contains "stdio start failure reported" "$("$SETUP" probe 2>&1)" "cannot start"
 "$SETUP" init --transport none >/dev/null
 OUT="$("$SETUP" listen arm)"
-expect_contains "arm with no transport warns" "$OUT" "no transport to the hub"
-expect_eq "wake with no transport stays silent" "$(echo '{"session_id":"t3","cwd":"/tmp/demo","prompt":"hi"}' | "$WAKE")" "{}"
+expect_contains "arm with no transport says the model will sweep" "$OUT" "no transport to the hub"
 "$SETUP" listen disarm >/dev/null
 
 echo "# permissions"
