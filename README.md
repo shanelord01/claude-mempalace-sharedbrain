@@ -93,10 +93,10 @@ Optionally the hooks can read the hub themselves, so the session-start check and
 run before the model is involved and cost it nothing. `setup` offers three paths:
 
 - the hub's HTTP endpoint with its static bearer token, read from an environment variable or a
-  command such as a keychain lookup (the setup MemPalace's remote-server guide describes);
+  command such as a keychain lookup (the setup MemPalace's remote-server guide describes).
 - the OAuth client credentials grant against the hub's authorization server, for a hub behind an
   OAuth login: a confidential client per machine, its secret in the keyring, the access token
-  cached until it expires, no static hub token on any machine;
+  cached until it expires, no static hub token on any machine.
 - a local `mempalace-mcp`, which proxies to a hub on the same machine.
 
 ## Hosting a hub

@@ -65,7 +65,7 @@ directory is created readable by the current user only.
 
 ## Four common setups
 
-No hook-side credential (the default). The model's logged-in MCP server does every hub call; the
+No hook-side credential (the default). The model's logged-in MCP server does every hub call. The
 hooks supply identity, cursor, watch state and the exact calls to make:
 
 ```

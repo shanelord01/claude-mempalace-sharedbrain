@@ -38,7 +38,7 @@ waiting on one known correlation, `mempalace_event_wait` in-turn is the protocol
 The context shows the matched events as excerpts, or the result of the call you made. Fetch each
 in full with `mempalace_event_list` (by `correlation_id`), report to the user, act only on a
 go-ahead, ack what you take on, and record your inbox cursor (`setup.sh cursor set <id>`). The
-watch cursor advanced already when the hook ran the sweep; advance it yourself when you did.
+watch cursor advanced already when the hook ran the sweep. Advance it yourself when you did.
 
 ## Disarm
 
