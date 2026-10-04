@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { itemLine, parseCheckIn, requiresOf, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
+import { closedTasks, itemLine, parseCheckIn, requiresOf, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[] } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[] } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -69,7 +69,8 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (e.tool === 'mempalace_list_drawers') return reply({ drawers: (opts.presence ?? []).map(p => ({ content_preview: p })) })
     if (e.tool === 'mempalace_mesh_peers') return { value: { content: [{ type: 'text', text: JSON.stringify({ peers: opts.meshPeers ?? [] }) }], isError: false } }
     let events: unknown[] = []
-    if (a.writer === ME || a.from_agent === ME) events = [MY_ACK]
+    if (a.type === 'event.ack' || a.type === 'task.reply') events = opts.closures ?? []
+    else if (a.writer === ME || a.from_agent === ME) events = [MY_ACK]
     else if (a.type === 'task.request') events = [TASK_NEEDS_XCODE, TASK_ACKED]
     else if (a.since_event_id === 'evt_00') events = [TASK_NEEDS_XCODE]
     else if (a.since_event_id === 'evt_w1') events = opts.newMail ?? []
@@ -121,7 +122,7 @@ describe('session start and the first prompt', () => {
     expect(text).toContain(`checked by the mempalace-sharedbrain mod through the MCP server "${SERVER}"`)
     expect(text).toContain('evt_01')
     expect(text).toContain('THIS MACHINE CANNOT MEET: xcode>=27')
-    expect(text).toContain('with no ack from this identity: 1')
+    expect(text).toContain('not closed by anyone and not acked by this identity: 1')
     expect(text).not.toContain('done already')
     expect(text).toContain('once this message has reached you')
     expect(calls).not.toContainEqual(['cursor', 'set', 'evt_01'])
@@ -322,5 +323,23 @@ describe('presence', () => {
   test('parseCheckIn reads only check-in lines', () => {
     expect(parseCheckIn('identity: a:b:c | checked_in 2026-10-04T10:00:00Z | plugin 0.4.9 mod | listening no | host a | project c')?.project).toBe('c')
     expect(parseCheckIn('anything else')).toBeNull()
+  })
+})
+
+describe('closed by anyone', () => {
+  test('a broadcast another agent closed is not listed as open', async ($, on) => {
+    world(on, { closures: [{ id: 'evt_c1', type: 'event.ack', from_agent: 'peer:claude:x', status: 'applied', metadata: { ack_of: 'evt_01' } }] })
+    const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    expect((result.additionalContext ?? []).join('\n')).toContain('not acked by this identity: 0')
+  })
+
+  test('a terminal reply on the thread closes it; a claim does not', () => {
+    const closed = closedTasks([
+      { type: 'task.reply', status: 'applied', correlation_id: 'task_a' },
+      { type: 'event.ack', status: 'claimed', metadata: { ack_of: 'evt_b' } },
+      { type: 'event.ack', status: 'superseded', metadata: { ack_of: 'evt_c' } },
+    ])
+    expect([...closed.correlations]).toEqual(['task_a'])
+    expect([...closed.ids]).toEqual(['evt_c'])
   })
 })

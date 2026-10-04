@@ -446,6 +446,24 @@ def list_events(client, **filters):
     return (client.call_tool("mempalace_event_list", arguments)).get("events") or []
 
 
+TERMINAL = {"applied", "failed", "superseded"}
+
+
+def closed_tasks(events):
+    """Ids and correlation ids of tasks someone closed: an ack (by ack_of) or a reply (by correlation)
+    with a terminal status, from any agent. A broadcast one agent finished is done for everyone."""
+    ids, correlations = set(), set()
+    for e in events or []:
+        if str(e.get("status") or "").lower() not in TERMINAL:
+            continue
+        ack_of = (e.get("metadata") or {}).get("ack_of")
+        if ack_of:
+            ids.add(ack_of)
+        if e.get("type") == "task.reply" and e.get("correlation_id"):
+            correlations.add(e["correlation_id"])
+    return ids, correlations
+
+
 def own_events(client, ident, limit=100):
     """Events written by this identity; uses `writer` when the hub's schema has it."""
     accepts_writer = client.tool_accepts("mempalace_event_list", "writer")
@@ -488,8 +506,12 @@ def run_probe(cfg, ident, cursor=""):
         mine = own_events(client, ident)
         my_correlations = {e.get("correlation_id") for e in mine if e.get("correlation_id")}
         my_ack_targets = {(e.get("metadata") or {}).get("ack_of") for e in mine if (e.get("metadata") or {}).get("ack_of")}
+        closures = list_events(client, type="event.ack", limit=100) + list_events(client, type="task.reply", limit=100)
+        closed_ids, closed_correlations = closed_tasks(closures)
         for task in tasks:
             item = summarise_event(task)
+            if task.get("id") in closed_ids or (task.get("correlation_id") and task.get("correlation_id") in closed_correlations):
+                continue  # finished by someone: not open any more
             result["open_tasks"].append(item)
             acked = task.get("id") in my_ack_targets or (task.get("correlation_id") in my_correlations)
             if not acked:
