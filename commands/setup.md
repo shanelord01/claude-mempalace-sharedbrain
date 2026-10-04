@@ -1,6 +1,6 @@
 ---
-description: Configure the MemPalace plugin on this machine (agent id, how the hook reaches the palace, canonical drawers) and test it
-argument-hint: "[agent-id]"
+description: Configure this machine as a client of a MemPalace shared-brain hub (identity, rules block, how the hook reaches the hub) and test it
+argument-hint: "[host-label]"
 ---
 
 # Set up mempalace-sharedbrain on this machine
@@ -15,66 +15,75 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" show
 
 If a config file already exists, confirm with the user before changing anything.
 
-## 2. Agent id
+## 2. Identity
 
-Every write to the palace is attributed to an agent id, and tasks are addressed to one. The
-convention is the machine's hostname, lowercase, hyphenated (for example `work-laptop`,
-`office-desktop`). It must be unique across every machine that shares the palace. If
-`$ARGUMENTS` names one, use it. Otherwise propose the hostname-derived default from step 1 and
-ask the user to confirm or change it. Never reuse another machine's id.
-
-## 3. How the model reaches the palace
-
-Run `claude mcp list` and find the MemPalace server. Note its name: the model's tool names carry
-that name as a prefix (for example `mcp__mempalace__mempalace_search`). The hooks only need the
-`mempalace_*` tools to exist; they do not care about the prefix.
-
-If there is no MemPalace server, stop and help the user add one first:
-- Local palace: `claude mcp add mempalace -- mempalace-mcp` (needs the `mempalace` Python package).
-- Remote hub with a static token: `claude mcp add --transport http --scope user mempalace <url>/mcp --header "Authorization: Bearer <token>"`.
-- Remote hub with OAuth: `claude mcp add --transport http --scope user mempalace <url>/mcp`, then `/mcp` and Authenticate.
-
-## 4. How the hook reaches the palace (the live check)
-
-The SessionStart hook runs before the model exists, so it needs its own path to the palace.
-Pick one with the user:
-
-- Local stdio server: `--stdio-command "mempalace-mcp"` (whatever `claude mcp get mempalace` shows as the command).
-- Local or remote HTTP server with a static bearer token: `--url <url>/mcp` plus either
-  `--token-env MEMPALACE_MCP_HTTP_TOKEN` (the variable the hook reads) or
-  `--token-command "<command that prints the token>"` (a keychain or secret-store lookup; the
-  token itself is never written to the config file).
-- Remote hub that only accepts OAuth logins: `--transport none`. The hook cannot borrow the
-  model's OAuth token, so the live check is skipped and the model runs the inbox check itself.
-
-Write the config:
+The MemPalace shared-brain protocol names every agent `host:harness:project`: a short stable
+label for the machine (not a DHCP hostname), the runtime family (`claude` here), and the current
+workspace name, which the plugin derives from the working directory each session. Agree the host
+label with the user (`$ARGUMENTS` if given, otherwise propose the hostname-derived default from
+step 1), then:
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" init --agent-id <id> <transport flags>
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" init --host <label>
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" identity
 ```
 
-## 5. Canonical drawers (optional)
+If this hub already uses a different convention for this machine, `--fixed-id <id>` uses that
+exact string instead. Say that it falls outside the canonical form and that the protocol expects
+a one-time cutover: sweep the old inbox once, then stop using the old name.
 
-Drawers the bootstrap should fetch by id every session: a protocol or house-rules drawer, an agent
-roster, a style guide. Ask the user for ids and a short note each:
+## 3. The model's path to the hub
+
+Run `claude mcp list` and find the MemPalace server. The hooks only need the `mempalace_*` tools
+to exist in the session. The server name becomes a prefix on the tool names and nothing else.
+
+If there is none, help the user add one (from the MemPalace remote-server guide):
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" add-drawer <drawer_id> "<note>"
+claude mcp add --transport http --scope user mempalace https://hub.example.com/mcp \
+  --header "Authorization: Bearer $MEMPALACE_MCP_HTTP_TOKEN"
 ```
 
-## 6. Test
+For a hub behind an OAuth login, the same without `--header`, then `/mcp` and Authenticate.
+
+## 4. The hook's path to the hub
+
+The hooks run before the model exists, so the live check and the wake check need their own
+path. Pick one with the user:
+
+- HTTP hub with its static bearer token: `--url <hub>/mcp` plus `--token-env NAME` (the hook
+  reads that variable) or `--token-command "<command that prints the token>"` (a keychain or
+  secret-store lookup, so the token never enters the config file).
+- A local `mempalace-mcp` that proxies to a local hub: `--stdio-command "mempalace-mcp"`.
+- A hub that only accepts OAuth logins: `--transport none`. The hook cannot borrow the model's
+  OAuth token, so the live check and the wake check are off and the model does the sweeps itself.
 
 ```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" init <transport flags>
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" probe
 ```
 
-A reachable palace prints its drawer count and the open tasks addressed to this agent. A 401
-means the token is missing or wrong, or the hub only accepts OAuth (use `--transport none`).
-A connection error means the URL or the network, not the plugin.
+A reachable hub prints its drawer count and the open tasks addressed to this identity. A 401
+means the token is missing or wrong, or the hub is OAuth-only.
 
-## 7. Finish
+## 5. The rules block
 
-Tell the user: the bootstrap block appears at the start of every new session from now on
-(`/mempalace-sharedbrain:bootstrap` runs it on demand), and the config lives at the path printed
-by `setup.sh path`. If the palace is shared with other agents, suggest filing a short drawer
-announcing this agent id so the others know who is on the palace.
+Install MemPalace's canonical shared-brain block into the instruction file (default
+`~/.claude/CLAUDE.md`). Show the diff first and ask before writing:
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" rules install
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" rules install --write
+```
+
+The block sits between `<!-- mempalace-shared-brain:start ... -->` and
+`<!-- mempalace-shared-brain:end -->` markers and is replaced in place on later updates. If the
+file already has a hand-written section covering the same ground, point it out: two statements
+of one protocol drift apart. The user decides what to remove.
+
+## 6. Finish
+
+Tell the user: every new session now starts with the identity, the rules-block status, the inbox
+cursor and (with a transport) the live check. `/mempalace-sharedbrain:inbox` sweeps the inbox,
+`/mempalace-sharedbrain:listen` arms the wake check when a coordination loop starts, and the
+config lives at the path from `setup.sh path`.

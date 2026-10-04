@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Configure the plugin for this machine. Run with no arguments for usage.
+# Configure and operate the plugin on this machine. Run with no arguments for usage.
 #
 #   scripts/setup.sh show
-#   scripts/setup.sh init --agent-id my-laptop --url https://hub.example.com/mcp --token-env MEMPALACE_MCP_HTTP_TOKEN
-#   scripts/setup.sh init --agent-id my-laptop --stdio-command "mempalace-mcp"
-#   scripts/setup.sh init --agent-id my-laptop --transport none
-#   scripts/setup.sh add-drawer drawer_x_y_abc "what it holds"
+#   scripts/setup.sh init --host office-desktop --url https://hub.example.com/mcp --token-env MEMPALACE_MCP_HTTP_TOKEN
+#   scripts/setup.sh rules install --write
 #   scripts/setup.sh probe
+#   scripts/setup.sh cursor set evt_...
+#   scripts/setup.sh listen arm --correlation-id task_...
+#   scripts/setup.sh peers
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../hooks/bin/common.sh"

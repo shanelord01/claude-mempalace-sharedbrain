@@ -1,37 +1,88 @@
-"""Configure the plugin for this machine.
+"""Configure and operate the plugin on this machine.
 
     setup.py show
-    setup.py init [--agent-id ID] [--transport auto|http|stdio|none] [--url URL]
-                  [--token-env NAME] [--token-command CMD] [--stdio-command "CMD ARGS"]
-                  [--save-interval N] [--no-probe]
-    setup.py set KEY VALUE          dotted key, JSON value if it parses, else a string
-    setup.py add-drawer ID [NOTE]   add a canonical drawer the bootstrap fetches by id
-    setup.py remove-drawer ID
-    setup.py probe                  run the live check and print what the hook would see
-    setup.py path                   print the config file path
+    setup.py path
+    setup.py identity [--cwd DIR]
+    setup.py init [--host LABEL] [--harness X] [--project auto|NAME]
+                  [--fixed-id ID | --no-fixed-id]
+                  [--transport auto|http|stdio|none] [--url URL] [--token-env NAME]
+                  [--token-command CMD] [--stdio-command "CMD ARGS"] [--timeout S]
+                  [--rules-target FILE] [--mcp full|light] [--project-example NAME]
+                  [--save-interval N] [--no-probe | --probe]
+    setup.py set KEY VALUE              dotted key, JSON value if it parses, else a string
+    setup.py probe                      what the SessionStart hook will see
+    setup.py cursor get | set EVENT_ID | clear
+    setup.py listen arm [--type T ...] [--correlation-id ID] [--topic T] [--from EVENT_ID]
+    setup.py listen disarm | status
+    setup.py peers                      mempalace_mesh_peers and /statusz
+    setup.py rules render|check|install [--write] [--host ..] [--project ..] [--mcp ..] [--target ..]
+    setup.py vendor-check [--update]    compare the vendored rules template with upstream
 
-init keeps any existing settings and only changes the flags you pass.
+init keeps any existing settings and changes only the flags you pass.
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import shlex
 import sys
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
 import sb_common as C  # noqa: E402
 
+UPSTREAM_RAW = "https://raw.githubusercontent.com/MemPalace/mempalace/main/"
+UPSTREAM_API_COMMIT = "https://api.github.com/repos/MemPalace/mempalace/commits/main"
 
-def cmd_show(cfg, _args):
-    print("config file: %s%s" % (cfg["_config_file"], "" if cfg["_config_present"] else " (not written yet, showing defaults)"))
-    print("agent_id:    %s%s" % (C.agent_id(cfg), "" if cfg.get("agent_id") else " (derived from hostname, set one with init --agent-id)"))
+
+def _print_config(cfg):
     clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
     print(json.dumps(clean, indent=2, sort_keys=True))
 
 
+def cmd_show(cfg, _args):
+    print("config file: %s%s" % (cfg["_config_file"], "" if cfg["_config_present"] else " (not written yet, showing defaults)"))
+    ident = C.identity(cfg)
+    print("identity:    %s%s" % (ident, "" if C.identity_is_canonical(ident) else "  (not in host:harness:project form)"))
+    print("cursor:      %s" % (C.read_cursor(ident) or "(none)"))
+    watch = C.read_watch(ident)
+    print("listening:   %s" % ("armed, types %s, since %s" % (", ".join(watch.get("types") or []), watch.get("since_event_id") or "(start)") if watch.get("armed") else "no"))
+    _print_config(cfg)
+
+
+def cmd_path(_cfg, _args):
+    print(C.CONFIG_FILE)
+
+
+def cmd_identity(cfg, args):
+    ident = C.identity(cfg, args.cwd)
+    print(ident)
+    return 0 if C.identity_is_canonical(ident) else 0
+
+
 def cmd_init(cfg, args):
-    if args.agent_id:
-        cfg["agent_id"] = args.agent_id
+    ident = cfg["identity"]
+    if args.host is not None:
+        ident["host"] = C.component(args.host, "")
+        if not ident["host"]:
+            print("--host must be a lowercase token (letters, digits, '.', '_', '-')", file=sys.stderr)
+            return 1
+    if args.harness is not None:
+        ident["harness"] = C.component(args.harness, "claude")
+    if args.project is not None:
+        ident["project"] = args.project if args.project == "auto" else C.component(args.project, "workspace")
+    if args.fixed_id is not None:
+        ident["fixed"] = args.fixed_id.strip()
+    if args.no_fixed_id:
+        ident["fixed"] = ""
+    rules = cfg["rules"]
+    if args.rules_target is not None:
+        rules["target"] = args.rules_target
+    if args.mcp is not None:
+        rules["mcp"] = args.mcp
+    if args.project_example is not None:
+        rules["project_example"] = C.component(args.project_example, "")
     hub = cfg["hub"]
     if args.transport:
         hub["transport"] = args.transport
@@ -54,6 +105,7 @@ def cmd_init(cfg, args):
     C.save_config(cfg)
     print("wrote %s" % C.CONFIG_FILE)
     cmd_show(C.load_config(), args)
+    return 0
 
 
 def _coerce(value):
@@ -73,36 +125,155 @@ def cmd_set(cfg, args):
     node[keys[-1]] = _coerce(args.value)
     C.save_config(cfg)
     print("set %s" % args.key)
-
-
-def cmd_add_drawer(cfg, args):
-    drawers = [d for d in cfg.get("canonical_drawers") or [] if (d.get("id") if isinstance(d, dict) else d) != args.id]
-    drawers.append({"id": args.id, "note": args.note or ""})
-    cfg["canonical_drawers"] = drawers
-    C.save_config(cfg)
-    print("canonical drawers: %d" % len(drawers))
-
-
-def cmd_remove_drawer(cfg, args):
-    before = cfg.get("canonical_drawers") or []
-    after = [d for d in before if (d.get("id") if isinstance(d, dict) else d) != args.id]
-    cfg["canonical_drawers"] = after
-    C.save_config(cfg)
-    print("removed %d" % (len(before) - len(after)))
+    return 0
 
 
 def cmd_probe(cfg, _args):
     import sb_probe as P
-    agent = C.agent_id(cfg)
-    outcome = P.run_probe(cfg, agent)
+    ident = C.identity(cfg)
+    outcome = P.run_probe(cfg, ident, C.read_cursor(ident))
     print(json.dumps(outcome, indent=2))
     print()
-    print(P.format_probe(outcome, agent))
+    print(P.format_probe(outcome, ident))
     return 0 if outcome.get("reachable") or outcome.get("transport") == "none" else 1
 
 
-def cmd_path(_cfg, _args):
-    print(C.CONFIG_FILE)
+def cmd_cursor(cfg, args):
+    ident = C.identity(cfg)
+    if args.action == "get":
+        print(C.read_cursor(ident) or "")
+        return 0
+    if args.action == "clear":
+        C.clear_cursor(ident)
+        print("cursor cleared for %s" % ident)
+        return 0
+    event_id = (args.event_id or "").strip()
+    if not re.fullmatch(r"evt_[A-Za-z0-9_.\-]+", event_id):
+        print("cursor set needs an event id like evt_20260101T000000_abcdef012345", file=sys.stderr)
+        return 1
+    C.write_cursor(ident, event_id)
+    print("cursor for %s is now %s" % (ident, event_id))
+    return 0
+
+
+def _tip_event_id(cfg, ident):
+    """Newest event id addressed to this identity, or '' when unknown."""
+    import sb_probe as P
+    client = None
+    try:
+        client, transport, _token = P.open_client(cfg)
+        if client is None:
+            return ""
+        client.initialize()
+        events = P.list_events(client, to_agent=ident, limit=1)
+        return (events[0].get("id") or "") if events else ""
+    except Exception:
+        return ""
+    finally:
+        if client is not None:
+            client.close()
+
+
+def cmd_listen(cfg, args):
+    ident = C.identity(cfg)
+    if args.action == "status":
+        watch = C.read_watch(ident)
+        print(json.dumps(watch or {"armed": False, "identity": ident}, indent=2))
+        return 0
+    if args.action == "disarm":
+        C.clear_watch(ident)
+        print("listening disarmed for %s" % ident)
+        print()
+        print("Declared-idle statement to post or say, per the protocol:")
+        print("%s is NOT monitoring — turn-based, no background watcher." % ident)
+        print("Last seen: %s" % (C.read_cursor(ident) or "(no cursor recorded)"))
+        print("Ping the operator to wake me; I sweep to_agent=%s on every start." % ident)
+        return 0
+    types = args.type or cfg["wake"].get("types") or ["task.request", "task.reply", "patch.ready"]
+    since = (args.since or "").strip() or _tip_event_id(cfg, ident) or C.read_cursor(ident)
+    state = {"armed": True, "types": types, "correlation_id": args.correlation_id or "",
+             "topic": args.topic or "", "since_event_id": since}
+    C.write_watch(ident, state)
+    import sb_probe as P
+    transport = P.resolve_transport(cfg["hub"])
+    print("listening armed for %s: types %s%s%s, watch cursor %s" % (
+        ident, ", ".join(types),
+        (", correlation %s" % args.correlation_id) if args.correlation_id else "",
+        (", topic %s" % args.topic) if args.topic else "", since or "(start)"))
+    if transport == "none":
+        print("NOTE: the hook has no transport to the hub, so the per-prompt wake check cannot run. "
+              "Loop on mempalace_event_wait in-turn and carry since_event_id, as the protocol says for remote clients.")
+    print()
+    print("Announcement to post once (type=status, room=status, to_agent=*%s):" % (
+        (", correlation_id=%s" % args.correlation_id) if args.correlation_id else ""))
+    print("%s is MONITORING for coordination replies (%s)." % (ident, " / ".join(types)))
+    print("Watching: to_agent=%s%s%s. Mode: per-prompt wake check (turn-based client, no background process)." % (
+        ident, (" and correlation_id=%s" % args.correlation_id) if args.correlation_id else "",
+        (" on topic %s" % args.topic) if args.topic else ""))
+    print("Cursor after: %s" % (since or "(start)"))
+    return 0
+
+
+def cmd_peers(cfg, _args):
+    import sb_probe as P
+    out = P.peers(cfg)
+    print(json.dumps(out, indent=2))
+    return 0 if not out.get("error") else 1
+
+
+def cmd_rules(_cfg, args):
+    import rules as R
+    argv = [args.action]
+    for flag in ("host", "harness", "project", "mcp", "target"):
+        value = getattr(args, flag, None)
+        if value:
+            argv += ["--" + flag, value]
+    if args.write:
+        argv.append("--write")
+    return R.main(argv)
+
+
+def _fetch(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "mempalace-sharedbrain"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def cmd_vendor_check(_cfg, args):
+    vendor_dir = os.path.join(C.plugin_root(), "vendor")
+    local_path = os.path.join(vendor_dir, "shared_brain_rules.md")
+    try:
+        local = open(local_path, "rb").read()
+        remote = _fetch(UPSTREAM_RAW + "mempalace/instructions/shared_brain_rules.md")
+        pyproject = _fetch(UPSTREAM_RAW + "pyproject.toml").decode("utf-8", "replace")
+        commit = json.loads(_fetch(UPSTREAM_API_COMMIT).decode("utf-8", "replace")).get("sha", "")
+    except Exception as exc:
+        print("vendor-check failed: %s" % exc, file=sys.stderr)
+        return 1
+    version_match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
+    version = version_match.group(1) if version_match else "?"
+    local_sha, remote_sha = hashlib.sha256(local).hexdigest(), hashlib.sha256(remote).hexdigest()
+    if local_sha == remote_sha:
+        print("vendored shared_brain_rules.md matches upstream main (%s, %s)" % (version, commit[:12]))
+        return 0
+    print("vendored shared_brain_rules.md DIFFERS from upstream main (%s, %s)" % (version, commit[:12]))
+    if not args.update:
+        print("run with --update to replace the copy and record the new provenance")
+        return 4
+    with open(local_path, "wb") as fh:
+        fh.write(remote)
+    upstream_md = os.path.join(vendor_dir, "UPSTREAM.md")
+    try:
+        text = open(upstream_md, encoding="utf-8").read()
+        text = re.sub(r"^\| `shared_brain_rules\.md` \|.*$",
+                      "| `shared_brain_rules.md` | `mempalace/instructions/shared_brain_rules.md` | %s | %s | %s |" % (version, commit, remote_sha),
+                      text, flags=re.M)
+        open(upstream_md, "w", encoding="utf-8").write(text)
+    except OSError as exc:
+        print("updated the template but could not rewrite UPSTREAM.md: %s" % exc, file=sys.stderr)
+        return 1
+    print("updated vendor/shared_brain_rules.md and vendor/UPSTREAM.md; run tests/run.sh, then commit")
+    return 0
 
 
 def build_parser():
@@ -112,41 +283,70 @@ def build_parser():
     sub.add_parser("show").set_defaults(func=cmd_show)
     sub.add_parser("path").set_defaults(func=cmd_path)
     sub.add_parser("probe").set_defaults(func=cmd_probe)
+    sub.add_parser("peers").set_defaults(func=cmd_peers)
 
-    p_init = sub.add_parser("init")
-    p_init.add_argument("--agent-id")
-    p_init.add_argument("--transport", choices=["auto", "http", "stdio", "none"])
-    p_init.add_argument("--url")
-    p_init.add_argument("--token-env")
-    p_init.add_argument("--token-command")
-    p_init.add_argument("--stdio-command")
-    p_init.add_argument("--timeout", type=float)
-    p_init.add_argument("--save-interval", type=int)
-    p_init.add_argument("--no-probe", action="store_true")
-    p_init.add_argument("--probe", action="store_true")
-    p_init.set_defaults(func=cmd_init)
+    p = sub.add_parser("identity")
+    p.add_argument("--cwd")
+    p.set_defaults(func=cmd_identity)
 
-    p_set = sub.add_parser("set")
-    p_set.add_argument("key")
-    p_set.add_argument("value")
-    p_set.set_defaults(func=cmd_set)
+    p = sub.add_parser("init")
+    p.add_argument("--host")
+    p.add_argument("--harness")
+    p.add_argument("--project", help="auto (from the workspace) or a fixed project component")
+    p.add_argument("--fixed-id", help="use this exact identity instead of host:harness:project")
+    p.add_argument("--no-fixed-id", action="store_true")
+    p.add_argument("--transport", choices=["auto", "http", "stdio", "none"])
+    p.add_argument("--url")
+    p.add_argument("--token-env")
+    p.add_argument("--token-command")
+    p.add_argument("--stdio-command")
+    p.add_argument("--timeout", type=float)
+    p.add_argument("--rules-target")
+    p.add_argument("--mcp", choices=["full", "light"])
+    p.add_argument("--project-example")
+    p.add_argument("--save-interval", type=int)
+    p.add_argument("--no-probe", action="store_true")
+    p.add_argument("--probe", action="store_true")
+    p.set_defaults(func=cmd_init)
 
-    p_add = sub.add_parser("add-drawer")
-    p_add.add_argument("id")
-    p_add.add_argument("note", nargs="?")
-    p_add.set_defaults(func=cmd_add_drawer)
+    p = sub.add_parser("set")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_set)
 
-    p_rm = sub.add_parser("remove-drawer")
-    p_rm.add_argument("id")
-    p_rm.set_defaults(func=cmd_remove_drawer)
+    p = sub.add_parser("cursor")
+    p.add_argument("action", choices=["get", "set", "clear"])
+    p.add_argument("event_id", nargs="?")
+    p.set_defaults(func=cmd_cursor)
+
+    p = sub.add_parser("listen")
+    p.add_argument("action", choices=["arm", "disarm", "status"])
+    p.add_argument("--type", action="append")
+    p.add_argument("--correlation-id")
+    p.add_argument("--topic")
+    p.add_argument("--from", dest="since", help="watch cursor to start from (default: the newest event, like a first `logstream watch`)")
+    p.set_defaults(func=cmd_listen)
+
+    p = sub.add_parser("rules")
+    p.add_argument("action", choices=["render", "check", "install"])
+    p.add_argument("--host")
+    p.add_argument("--harness")
+    p.add_argument("--project")
+    p.add_argument("--mcp", choices=["full", "light"])
+    p.add_argument("--target")
+    p.add_argument("--write", action="store_true")
+    p.set_defaults(func=cmd_rules)
+
+    p = sub.add_parser("vendor-check")
+    p.add_argument("--update", action="store_true")
+    p.set_defaults(func=cmd_vendor_check)
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     cfg = C.load_config()
-    rc = args.func(cfg, args)
-    return rc or 0
+    return args.func(cfg, args) or 0
 
 
 if __name__ == "__main__":

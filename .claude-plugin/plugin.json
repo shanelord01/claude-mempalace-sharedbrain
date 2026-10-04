@@ -1,7 +1,7 @@
 {
   "name": "mempalace-sharedbrain",
-  "version": "0.1.1",
-  "description": "Makes every Claude Code session start from its MemPalace memory: checks the palace, the task inbox and the canonical drawers before work begins, reminds the model to checkpoint, and snapshots the conversation before compaction. Works with a shared hub or a local palace.",
+  "version": "0.2.0",
+  "description": "Claude Code client for a MemPalace shared-brain hub: installs and keeps current the canonical rules block in CLAUDE.md without the mempalace package, composes the host:harness:project identity, carries the inbox cursor, checks the hub and the task inbox at session start, wakes the session on new coordination events, and keeps checkpoint and compaction saves working for a remote client.",
   "author": {
     "name": "shanelord01",
     "url": "https://github.com/shanelord01"
@@ -9,5 +9,13 @@
   "homepage": "https://github.com/shanelord01/claude-mempalace-sharedbrain",
   "repository": "https://github.com/shanelord01/claude-mempalace-sharedbrain",
   "license": "MIT",
-  "keywords": ["mempalace", "memory", "shared-brain", "mcp", "hooks", "multi-agent"]
+  "keywords": [
+    "mempalace",
+    "shared-brain",
+    "memory",
+    "mcp",
+    "hooks",
+    "multi-agent",
+    "logstream"
+  ]
 }

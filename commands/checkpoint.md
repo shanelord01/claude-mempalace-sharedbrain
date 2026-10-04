@@ -1,29 +1,25 @@
 ---
-description: File this session's durable outcomes to the MemPalace palace now and write a diary entry
+description: Save this session's durable outcomes to the hub now with mempalace_checkpoint (drawers plus a diary entry in one call)
 argument-hint: "[topic]"
 ---
 
-# Checkpoint this session to the palace
+# Checkpoint this session
 
-Use the agent id from the MEMPALACE SHARED BRAIN block in this session's context (or
-`bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" show`). `$ARGUMENTS`, if given, is the topic.
+MemPalace's `mempalace_checkpoint` saves a whole session in one call: it dedups each item,
+files the new ones as drawers, then writes one diary entry. Use it rather than many separate
+calls. Identity comes from the MEMPALACE SHARED BRAIN block; `$ARGUMENTS`, if given, is the
+diary topic.
 
-1. List what this session produced that someone would want to find later: decisions and why,
-   conclusions, learned facts, corrections to earlier beliefs, verbatim quotes from the user
-   that set direction, code or commands worth keeping. Leave out secrets, tokens, transient
-   state and anything already filed.
-2. For each item that is a rule or preference, `mempalace_check_duplicate` first. If a match
-   exists, update that drawer with `mempalace_update_drawer` rather than filing a second one.
-3. File the rest with `mempalace_add_drawer`: wing = the project, room = the aspect
-   (decisions, problems, architecture, deployment...). Open each drawer with a purpose line
-   phrased as the problem someone would search for, then a `Search terms:` line listing the
-   phrasings they will actually type. Quote the user verbatim where it matters. Set
-   `added_by` to the agent id.
-4. Facts that changed: `mempalace_kg_supersede` for a single-valued fact (replaces old with new
-   at one boundary), `mempalace_kg_invalidate` for a fact that simply ended, `mempalace_kg_add`
-   for a new independent fact. Name drawer ids in the object. Objects cap at 128 characters.
-5. If any claimed task reached a stopping point, ack it (`applied`, `blocked` or `failed`).
-6. `mempalace_diary_write` with `agent_name=<agent id>`, one AAAK entry: what happened, what
-   was learned, what matters, importance stars.
+1. List what this session produced that a future session should know: decisions and their
+   reasons, conclusions, learned facts, corrections, the user's verbatim words that set
+   direction, code or commands worth keeping. Leave out secrets, tokens, transient state and
+   anything already filed.
+2. Call `mempalace_checkpoint` with `items` (each `{wing, room, content}`, content verbatim),
+   `added_by=<identity>`, and `diary={agent_name: <identity>, entry: <AAAK>, topic}`. The AAAK
+   spec comes back from `mempalace_get_aaak_spec` or the `mempalace_status` response.
+3. Facts that changed: `mempalace_kg_supersede` for a single-valued fact, `mempalace_kg_invalidate`
+   for one that ended, `mempalace_kg_add` for a new independent fact.
+4. Any claimed task that reached a stopping point: ack it (`applied`, `blocked` or `failed`).
 
-Report the drawer ids filed, any duplicates merged, and the diary entry id.
+Report the drawer ids filed, duplicates skipped, and the diary entry id. The inbox cursor is
+unchanged by a checkpoint.

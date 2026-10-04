@@ -1,8 +1,14 @@
 """Shared helpers for the mempalace-sharedbrain hooks and scripts.
 
 Configuration lives in one JSON file per machine (XDG config dir by default)
-and hook state (counters, snapshots, log) in the XDG state dir. Both paths can
-be overridden with environment variables, which the tests use.
+and hook state (inbox cursors, watch state, snapshots, log) in the XDG state
+dir. Both paths can be overridden with environment variables, which the tests
+use.
+
+Identity follows the MemPalace shared-brain protocol: ``host:harness:project``,
+where host is a stable label for the machine, harness is ``claude`` and project
+is the current workspace name. ``identity.fixed`` overrides the whole string
+for estates that use another convention.
 """
 import copy
 import json
@@ -22,11 +28,27 @@ STATE_DIR = os.environ.get("MEMPALACE_SHAREDBRAIN_STATE") or os.path.join(
     "mempalace-sharedbrain",
 )
 PENDING_DIR = os.path.join(STATE_DIR, "pending")
+CURSOR_DIR = os.path.join(STATE_DIR, "cursors")
+WATCH_DIR = os.path.join(STATE_DIR, "watch")
 LOG_FILE = os.path.join(STATE_DIR, "hook.log")
 LOG_MAX_BYTES = 1024 * 1024
 
+# Same shape upstream validates in `mempalace rules`.
+COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
 DEFAULTS = {
-    "agent_id": "",
+    "identity": {
+        "host": "",
+        "harness": "claude",
+        "project": "auto",
+        "fixed": "",
+    },
+    "rules": {
+        "target": "~/.claude/CLAUDE.md",
+        "mcp": "full",
+        "project_example": "",
+        "prefer_cli": True,
+    },
     "hub": {
         "transport": "auto",
         "url": "",
@@ -39,18 +61,21 @@ DEFAULTS = {
         "enabled": True,
         "inbox_limit": 10,
     },
-    "canonical_drawers": [],
-    "extra_context": [],
+    "wake": {
+        "types": ["task.request", "task.reply", "patch.ready"],
+        "limit": 50,
+    },
     "checkpoint": {
         "save_interval": 15,
     },
+    "extra_context": [],
 }
 
 
 def ensure_dirs():
-    """State dir and pending dir, readable by this user only (snapshots hold conversation text)."""
-    os.makedirs(PENDING_DIR, exist_ok=True)
-    for path in (STATE_DIR, PENDING_DIR):
+    """State dirs, readable by this user only (snapshots hold conversation text)."""
+    for path in (STATE_DIR, PENDING_DIR, CURSOR_DIR, WATCH_DIR):
+        os.makedirs(path, exist_ok=True)
         try:
             os.chmod(path, 0o700)
         except OSError:
@@ -107,13 +132,16 @@ def load_config():
         log("config unreadable at %s: %s" % (CONFIG_FILE, exc))
         raw = {}
     cfg = _merge(DEFAULTS, raw)
+    # 0.1.x wrote a flat agent_id; carry it as a fixed identity.
+    if raw.get("agent_id") and not cfg["identity"].get("fixed"):
+        cfg["identity"]["fixed"] = str(raw["agent_id"]).strip()
     cfg["_config_file"] = CONFIG_FILE
     cfg["_config_present"] = bool(raw)
     return cfg
 
 
 def save_config(cfg):
-    clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    clean = {k: v for k, v in cfg.items() if not k.startswith("_") and k != "agent_id"}
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
     with open_private(tmp, "w") as fh:
@@ -122,14 +150,108 @@ def save_config(cfg):
     os.replace(tmp, CONFIG_FILE)
 
 
-def default_agent_id():
-    host = socket.gethostname().split(".")[0].lower()
-    host = re.sub(r"[^a-z0-9]+", "-", host).strip("-")
-    return host or "claude-code"
+def component(value, fallback):
+    """Coerce a string into a valid identity component, or return fallback."""
+    text = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip("-._")
+    text = re.sub(r"^[^a-z0-9]+", "", text)
+    return text if text and COMPONENT_RE.fullmatch(text) else fallback
 
 
-def agent_id(cfg):
-    return (cfg.get("agent_id") or "").strip() or default_agent_id()
+def default_host_label():
+    return component(socket.gethostname().split(".")[0], "host")
+
+
+def host_label(cfg):
+    return component(cfg["identity"].get("host"), "") or default_host_label()
+
+
+def project_from_cwd(cwd=None):
+    cwd = cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    return component(os.path.basename(os.path.normpath(cwd)), "workspace")
+
+
+def identity(cfg, cwd=None):
+    """The from_agent identity for this session."""
+    fixed = (cfg["identity"].get("fixed") or "").strip()
+    if fixed:
+        return fixed
+    project_setting = (cfg["identity"].get("project") or "auto").strip()
+    project = project_from_cwd(cwd) if project_setting in ("", "auto") else component(project_setting, "workspace")
+    harness = component(cfg["identity"].get("harness"), "claude")
+    return "%s:%s:%s" % (host_label(cfg), harness, project)
+
+
+def identity_is_canonical(ident):
+    parts = ident.split(":")
+    return len(parts) == 3 and all(COMPONENT_RE.fullmatch(p) for p in parts)
+
+
+def identity_filename(ident):
+    """Mirror the CLI: double any underscore, then turn colons into underscores."""
+    return ident.replace("_", "__").replace(":", "_")
+
+
+def _read_json(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_json(path, data):
+    ensure_dirs()
+    with open_private(path, "w") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+
+def cursor_path(ident):
+    return os.path.join(CURSOR_DIR, identity_filename(ident) + ".json")
+
+
+def read_cursor(ident):
+    """The inbox cursor: id of the last event this identity processed, or ''."""
+    return str(_read_json(cursor_path(ident)).get("since_event_id") or "")
+
+
+def write_cursor(ident, event_id):
+    _write_json(cursor_path(ident), {
+        "identity": ident,
+        "since_event_id": event_id,
+        "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+
+
+def clear_cursor(ident):
+    try:
+        os.remove(cursor_path(ident))
+    except OSError:
+        pass
+
+
+def watch_path(ident):
+    return os.path.join(WATCH_DIR, identity_filename(ident) + ".json")
+
+
+def read_watch(ident):
+    """Armed watch state for this identity, or {} when not listening."""
+    return _read_json(watch_path(ident))
+
+
+def write_watch(ident, state):
+    state = dict(state)
+    state["identity"] = ident
+    state["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _write_json(watch_path(ident), state)
+
+
+def clear_watch(ident):
+    try:
+        os.remove(watch_path(ident))
+    except OSError:
+        pass
 
 
 def safe_id(value):
@@ -163,6 +285,13 @@ def plugin_version():
             return json.load(fh).get("version", "?")
     except (OSError, ValueError):
         return "?"
+
+
+def clean_line(value, limit):
+    """One printable line, control characters removed, whitespace collapsed, truncated."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value or ""))
+    text = " ".join(text.split())
+    return text[:limit]
 
 
 def emit(obj):

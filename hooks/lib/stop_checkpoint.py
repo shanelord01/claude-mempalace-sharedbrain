@@ -1,10 +1,12 @@
 """Stop hook body.
 
-Counts the genuine human turns in the transcript and, once save_interval
-new ones have passed since the last checkpoint, blocks the stop once with a
-reason asking the model to file the session's durable outcomes. Claude Code
-then calls the hook again with stop_hook_active=true and the hook lets the
-stop through, so this never loops.
+The MemPalace plugin's own Stop hook saves the transcript through the local
+package. A client whose only palace is a remote hub has no package and no
+local palace, so this hook does what MemPalace's hook does in its legacy
+(blocking) mode: every save_interval human turns it blocks the stop once and
+asks the model to save through the MCP tools, using MemPalace's own wording.
+Claude Code then calls the hook again with stop_hook_active=true and the stop
+goes through, so this never loops.
 
 Claude Code displays a blocking Stop hook as "Stop hook error" followed by
 the reason. That is its label for any block, not a failure.
@@ -16,14 +18,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 import sb_common as C  # noqa: E402
 import sb_transcript as T  # noqa: E402
 
+# Verbatim from mempalace/hooks_cli.py (STOP_BLOCK_REASON), followed by the
+# one-call alternative the server offers and this session's identity.
 REASON = (
-    "MEMPALACE CHECKPOINT. File this session's durable outcomes so far to the palace with the "
-    "mempalace MCP tools: decisions, conclusions, learned facts, verbatim quotes and code worth "
-    "keeping. Run mempalace_check_duplicate before filing a rule or preference, then "
-    "mempalace_add_drawer with a purpose line phrased as the problem someone would search for plus a "
-    "'Search terms:' line. Record changed facts with mempalace_kg_add, and use mempalace_kg_supersede "
-    "rather than stacking a contradictory fact. Write a short mempalace_diary_write entry in AAAK. "
-    "Set from_agent / added_by to %s. Then continue the conversation."
+    "MemPalace auto-save checkpoint. "
+    "Use mempalace_diary_write (session summary) and mempalace_add_drawer "
+    "(quotes, decisions, code) to save session content. "
+    "Do NOT use native auto-memory files. "
+    "mempalace_checkpoint does both in one call. Use %s as from_agent / added_by / agent_name. "
+    "Then continue the conversation."
 )
 
 
@@ -35,12 +38,13 @@ def main():
         return
 
     cfg = C.load_config()
-    agent = C.agent_id(cfg)
     interval = int(cfg["checkpoint"].get("save_interval") or 0)
     if interval <= 0:
         C.emit({})
         return
 
+    cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    ident = C.identity(cfg, cwd)
     session_id = C.safe_id(payload.get("session_id"))
     transcript = os.path.expanduser(str(payload.get("transcript_path") or ""))
     count = 0
@@ -61,18 +65,17 @@ def main():
 
     since = count - last
     if since < 0:
-        # A stale state file from another counter would keep the delta negative for ever.
-        with open(last_file, "w") as fh:
+        with C.open_private(last_file, "w") as fh:
             fh.write(str(count))
         C.log("STOP session %s: re-baselined stale count to %d" % (session_id, count))
         C.emit({})
         return
 
     if count > 0 and since >= interval:
-        with open(last_file, "w") as fh:
+        with C.open_private(last_file, "w") as fh:
             fh.write(str(count))
         C.log("STOP session %s: checkpoint at %d human turns (%d since last)" % (session_id, count, since))
-        C.emit({"decision": "block", "reason": REASON % agent})
+        C.emit({"decision": "block", "reason": REASON % ident})
         return
 
     C.emit({})

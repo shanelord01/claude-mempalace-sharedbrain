@@ -1,54 +1,66 @@
 # mempalace-sharedbrain
 
-A Claude Code plugin for a [MemPalace](https://github.com/MemPalace/mempalace) memory palace,
-shared between machines through a hub (`mempalace serve`) or kept locally. It makes every
-session start from the palace instead of from nothing: the hook checks the palace, reads the
-task inbox and names the drawers to fetch before the model gets the first prompt, reminds the
-model to file what it learned, and snapshots the conversation before Claude Code compacts it.
+A Claude Code plugin for machines that join a [MemPalace](https://github.com/MemPalace/mempalace)
+shared-brain hub: one `mempalace serve` process that several agents, on several machines, read
+and write through. MemPalace's own plugin covers a palace on the local machine. This one covers
+the client side of the hub, where the machine has no `mempalace` package, no local palace, and
+reaches the hub over HTTP.
 
-The same hooks, commands and rules install on every machine with one command and update with
-one more, so each agent on the palace runs the same protocol.
+It implements the client half of MemPalace's
+[shared-brain guide](https://mempalaceofficial.com/guide/shared-brain.html) inside Claude Code,
+using MemPalace's own texts and tools throughout. The plugin adds no protocol wording of its own.
 
 ## What it does
 
-**Session start** (new session, resume, `/clear`, and after a compaction). The hook adds a
-context block before the first prompt: this machine's agent id, the bootstrap checklist
-(`mempalace_status`, inbox check, canonical drawers by id, search before answering), and the
-attribution and task-closing rules. When it has a way to reach the palace it also runs a live
-check and reports the drawer count and every open task addressed to this agent that this agent
-has not yet acknowledged, verbatim. The model cannot skip the inbox: it is already in front of
-it.
+**Wires the protocol into CLAUDE.md** (guide, section 5). `mempalace rules` prints the canonical
+shared-brain block for an agent's instruction file, wrapped in markers for in-place re-rendering.
+The plugin renders the same block from a vendored copy of the same template (see
+`vendor/UPSTREAM.md`), or from the CLI when it is installed, and installs, checks or refreshes it
+in `~/.claude/CLAUDE.md`. Every session start reports whether the installed block is current,
+stale or missing.
 
-**Stop.** Every 15 human turns (configurable) the hook blocks the stop once and asks the model to
-file the session's durable outcomes and a diary entry. Claude Code shows this as "Stop hook
-error" followed by the request. That is its label for any blocking hook.
+**Composes the identity.** `host:harness:project`, with the project taken from the session's
+working directory, as the protocol describes. A fixed identity is available for hubs that already
+use another convention.
 
-**Before compaction.** The hook writes the human prompts, assistant replies and tool names since
-the last snapshot to a pending file, using no model context, and never blocks. After the
-compaction the session-start hook hands that file to the model to file and delete. Nothing said
-since the last checkpoint is lost to a compaction.
+**Carries the inbox cursor.** The protocol's cursor is the id of the last event you processed,
+resumed with `since_event_id`, never a timestamp. The plugin stores it per identity, shows it at
+session start, and the inbox command records it.
+
+**Checks the hub at session start.** With a transport of its own, the SessionStart hook reads the
+hub's `/healthz`, calls `mempalace_status`, lists events addressed to this identity since the
+cursor, and lists open task requests this identity has not acknowledged, before the model gets
+the first prompt. Event bodies are shown as excerpts and labelled as data.
+
+**Wakes the session on coordination events** (guide, section 7). A chat session has no
+background loop and a remote client should not run `mempalace logstream watch`. When the user
+arms listening, each prompt triggers one sweep since the watch cursor for the armed event types,
+excluding the identity's own events, and matches appear in the model's context. Arming prints the
+announcement the protocol asks for, and disarming prints the declared-idle statement.
+
+**Keeps saves working for a remote client.** MemPalace's Stop and PreCompact hooks save through
+the local package, which a hub client does not have. Here the Stop hook asks the model, in
+MemPalace's own words, to save through the MCP tools every 15 human turns, and the PreCompact hook
+snapshots the conversation to a private file without blocking, handed back after compaction.
 
 **Commands.**
 
 | Command | Does |
 |---|---|
-| `/mempalace-sharedbrain:setup` | Configure this machine: agent id, how the hook reaches the palace, canonical drawers. Tests it. |
-| `/mempalace-sharedbrain:bootstrap` | Run the session bootstrap on demand and report. |
-| `/mempalace-sharedbrain:inbox` | List delegated tasks verbatim; claim and work one only on a go-ahead; close the loop. |
-| `/mempalace-sharedbrain:checkpoint` | File this session's outcomes now, dedup first, diary entry last. |
-| `/mempalace-sharedbrain:delegate` | Draft a task for another agent with the user, then post it. |
-
-**Skill.** `mempalace-protocol` holds the full working rules for an agent on a shared palace:
-identity, bootstrap, recall, writing, knowledge-graph changes, the logstream, and how to change a
-shared rule without leaving two versions behind. The model loads it when a decision needs the
-long form.
+| `/mempalace-sharedbrain:setup` | Identity, the model's and the hook's path to the hub, rules block, live check. |
+| `/mempalace-sharedbrain:rules` | Render, check or install the canonical rules block, diff first. |
+| `/mempalace-sharedbrain:inbox` | Sweep from the cursor, report verbatim, claim only on a go-ahead, record the cursor. |
+| `/mempalace-sharedbrain:listen` | Arm or disarm the wake check and post the announcement. |
+| `/mempalace-sharedbrain:delegate` | `mempalace_task_create` with a preview, then arm, wait, verify, ack, file the outcome. |
+| `/mempalace-sharedbrain:checkpoint` | `mempalace_checkpoint`: drawers and a diary entry in one call. |
+| `/mempalace-sharedbrain:peers` | `mempalace_mesh_peers` and `/statusz`: hub, recent clients, mesh peers. |
 
 ## Requirements
 
 - Claude Code 2.1 or newer with a MemPalace MCP server registered (`claude mcp list` shows it).
-  Any registration works: a local `mempalace-mcp`, a remote hub with a bearer token, or a remote
-  hub behind OAuth. The hooks only need the `mempalace_*` tools to exist in the session.
-- bash and python3 (3.8 or newer) on the machine. Nothing is installed, no packages are needed.
+  Any registration works: a remote hub with a bearer token, a remote hub behind OAuth, or a local
+  `mempalace-mcp` proxying to a local hub. The hooks only need the `mempalace_*` tools to exist.
+- bash and python3 (3.8 or newer). Nothing is installed and no packages are needed.
 
 ## Install
 
@@ -63,56 +75,42 @@ Then, in a Claude Code session:
 /mempalace-sharedbrain:setup
 ```
 
-The command walks through the agent id, how the hook should reach the palace, and the canonical
-drawers, and runs the live check. The equivalent from a shell is `scripts/setup.sh`; see
-[docs/configuration.md](docs/configuration.md) for every key and three ready-made setups
-(local stdio, static token, OAuth hub).
-
+From a shell the same steps are `scripts/setup.sh init`, `scripts/setup.sh rules install --write`
+and `scripts/setup.sh probe`. Every key is in [docs/configuration.md](docs/configuration.md).
 Update later with `claude plugin update mempalace-sharedbrain@shanelord01`.
 
-## Agent ids
+## How the hook reaches the hub
 
-Every write to the palace carries an agent id, and tasks on the logstream are addressed to one.
-Use the machine's hostname, lowercase and hyphenated, and keep it unique across the palace. If a
-machine is renamed, record `old -renamed_to-> new` in the knowledge graph and announce it on the
-logstream, or history under the old id becomes unattributable.
+The model reaches the hub through its MCP server. The hooks run before the model exists, so the
+live check and the wake check need their own path, chosen in `setup`:
 
-## How the hook reaches the palace
+- the hub's HTTP endpoint with its static bearer token, read from an environment variable or a
+  command such as a keychain lookup.
+- a local `mempalace-mcp`, which proxies to a hub on the same machine;
+- none, for a hub that only accepts OAuth logins. The rules block, identity, cursor and posture
+  still load every session. The model runs the sweeps itself.
 
-The model reaches the palace through its MCP server. The hook runs before the model exists, so it
-needs its own path, chosen in `setup`:
+## Hosting a hub
 
-- a local stdio server (`mempalace-mcp`), started and stopped by the hook.
-- an HTTP server (`mempalace serve`, local or remote) with its static bearer token, read from an
-  environment variable or a command such as a keychain lookup.
-- none, for a hub that only accepts OAuth logins. The bootstrap block still tells the model to run
-  the inbox check itself. Only the hook's own live check is skipped.
-
-## Hosting a shared hub
-
-[docs/hub-setup.md](docs/hub-setup.md) is a full walkthrough for running a hub on a private
-machine with no open inbound ports: MemPalace and Qdrant behind a Newt/Pangolin tunnel, Pocket ID
-as the OAuth 2.1 authorization server, and a small caddy-jwt container that swaps each client's
-JWT for the hub's static token. Claude Code, Claude Desktop, the mobile apps and claude.ai all
-log in with a passkey. The same guide is on the
+MemPalace's [remote server guide](https://mempalaceofficial.com/guide/remote-server.html) covers
+`mempalace serve` with a static token. [docs/hub-setup.md](docs/hub-setup.md) adds an OAuth login
+in front of it: the hub and Qdrant on a private machine with no open inbound ports, reached through
+a Newt/Pangolin tunnel, Pocket ID as the OAuth 2.1 authorization server, and a small caddy-jwt
+container that swaps each client's JWT for the hub's static token. Claude Code, Claude Desktop,
+the mobile apps and claude.ai all log in with a passkey. The same guide is on the
 [hermes-mempalace-sharedbrain wiki](https://github.com/shanelord01/hermes-mempalace-sharedbrain/wiki/MemPalace-Hub-behind-Newt-Pangolin-OAuth).
 
-For the simpler case, `mempalace serve` with a static token on a LAN or VPN, follow MemPalace's
-own [remote server guide](https://mempalaceofficial.com/guide/remote-server.html) and register
-the URL with `claude mcp add --transport http --scope user mempalace <url>/mcp --header
-"Authorization: Bearer <token>"`.
-
 Hermes Agent users: [hermes-mempalace-sharedbrain](https://github.com/shanelord01/hermes-mempalace-sharedbrain)
-is the matching memory provider, so a Hermes gateway and your Claude Code machines share one
-palace and one logstream.
+is the matching memory provider, so a Hermes gateway and your Claude Code machines share one hub
+and one logstream.
 
 ## Other Claude surfaces
 
 Claude Desktop's Claude Code tab runs this plugin like the terminal does. The chat side of Claude
-Desktop, the mobile apps and claude.ai cannot run plugins or hooks. For those, add a MemPalace
-connector, upload `skills/mempalace-protocol` as a skill, and put two lines in Settings >
-Personal preferences: your agent id for that surface, and an instruction to call
-`mempalace_status` and check the inbox before starting work.
+Desktop, the mobile apps and claude.ai cannot run plugins or hooks. For those, add the hub as a
+connector and paste the rendered rules block (`scripts/setup.sh rules render`) into Settings >
+Personal preferences, as the guide's instruction-file table suggests for harnesses without a
+file.
 
 ## Tests
 
@@ -120,9 +118,10 @@ Personal preferences: your agent id for that surface, and an instruction to call
 tests/run.sh
 ```
 
-Runs every hook against a transcript fixture and a fake MemPalace server over HTTP (JSON and
-SSE), stdio, and with a bad token. Needs only bash and python3.
+Runs every hook and the setup tool against a transcript fixture and a fake hub over HTTP (JSON
+and SSE, with and without a token, with and without the `writer` filter) and stdio. Needs only
+bash and python3.
 
 ## Licence
 
-MIT.
+MIT. The vendored MemPalace template keeps its own MIT licence and copyright.
