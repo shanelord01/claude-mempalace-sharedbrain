@@ -46,6 +46,7 @@ declare module 'claude-code' {
       watchSeen: string
       server: string
       isPaneOpen: boolean
+      peersRelevant: boolean
     }
   }
 }

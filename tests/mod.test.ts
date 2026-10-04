@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { itemLine, requiresOf, toItem, unmetRequirements } from '../hooks/register'
+import { itemLine, requiresOf, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[] } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -46,6 +46,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     return {}
   })
   on('classic.Stop', async () => ({}))
+  on('command.describe', async (_$, e) => ({ description: e.description, isHidden: e.isHidden }))
   // The conversation as sent to the model: the test decides what reached it.
   const conversation: string[] = []
   on('session.messages', async () => ({ value: [{ role: 'user', content: [{ type: 'text', text: conversation.join('\n') }] }] }))
@@ -61,12 +62,14 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (opts.isUp && !opts.isUp()) return { value: { content: [{ type: 'text', text: 'no connected MCP tool' }], isError: true } }
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
     const a = e.args
+    if (e.tool === 'mempalace_mesh_peers') return { value: { content: [{ type: 'text', text: JSON.stringify({ peers: opts.meshPeers ?? [] }) }], isError: false } }
     let events: unknown[] = []
     if (a.writer === ME || a.from_agent === ME) events = [MY_ACK]
     else if (a.type === 'task.request') events = [TASK_NEEDS_XCODE, TASK_ACKED]
     else if (a.since_event_id === 'evt_00') events = [TASK_NEEDS_XCODE]
     else if (a.since_event_id === 'evt_w1') events = opts.newMail ?? []
     else if (a.limit === 1) events = []
+    else if (a.limit === 200) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events, count: events.length }) }], isError: false } }
   })
   const deliver = (result: { additionalContext?: readonly string[] }) => conversation.push(...(result.additionalContext ?? []))
@@ -226,4 +229,47 @@ describe('pane after a check', () => {
       expect(await ui.find({ text: /cannot meet: xcode>=27/ })).toBeDefined()
     })
   }
+})
+
+describe('sessions', () => {
+  test('the table lists identities newest first and marks this session and flat names', () => {
+    const now = Date.parse('2026-10-04T10:20:00Z')
+    const text = sessionsTable([
+      { from_agent: ME, created_at: '2026-10-04T10:16:00Z' },
+      { from_agent: 'mac-mini:claude:projects', created_at: '2026-10-04T10:14:00Z' },
+      { from_agent: 'mac-mini:claude:projects', created_at: '2026-10-04T09:00:00Z' },
+      { from_agent: 'unraid-hermes', created_at: '2026-10-01T04:00:00Z' },
+    ], ME, SERVER, now)
+    const rows = text.split('\n').filter(l => l.startsWith('  '))
+    expect(rows[0]).toContain(ME)
+    expect(rows[0]).toContain('this session')
+    expect(rows[1]).toContain('mac-mini:claude:projects')
+    expect(rows[1]).toContain('2 events')
+    expect(rows[2]).toContain('unraid-hermes')
+    expect(rows[2]).toContain('fixed or legacy name')
+    expect(rows[2]).toContain('3 days ago')
+  })
+
+  test('the command answers from the hub without the model', async ($, on) => {
+    world(on)
+    const out = await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never)
+    expect(JSON.stringify(out)).toContain('Agents writing to the hub')
+  })
+})
+
+describe('peers in the menu', () => {
+  const describePeers = ($: { command: { describe: (e: never) => Promise<{ isHidden: boolean }> } }) =>
+    $.command.describe({ command: 'mempalace-sharedbrain:peers', description: 'Show the shared-brain fleet state', isHidden: false } as never)
+
+  test('hidden on a single hub reached through the connector', async ($, on) => {
+    const { deliver } = world(on)
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect((await describePeers($ as never)).isHidden).toBe(true)
+  })
+
+  test('shown when the hub has mesh peers', async ($, on) => {
+    world(on, { meshPeers: [{ name: 'peer-hub' }] })
+    await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    expect((await describePeers($ as never)).isHidden).toBe(false)
+  })
 })

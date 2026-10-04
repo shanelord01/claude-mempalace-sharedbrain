@@ -80,7 +80,8 @@ bridge), the command hooks work as before.
 | `/mempalace-sharedbrain:delegate` | `mempalace_task_create` with a preview, optional `--requires` to pick a capable host, then arm, wait, verify, ack, file the outcome. |
 | `/mempalace-sharedbrain:checkpoint` | `mempalace_checkpoint`: drawers and a diary entry in one call. |
 | `/mempalace-sharedbrain:capabilities` | Probe this machine, publish its profile, check requirements, find hosts that meet them. |
-| `/mempalace-sharedbrain:peers` | `mempalace_mesh_peers` and `/statusz`: hub, recent clients, mesh peers. |
+| `/mempalace-sharedbrain:sessions` | The agents writing to the hub (`host:harness:project` identities), newest first, with when each was last active: who to send work to. The mod answers it directly. |
+| `/mempalace-sharedbrain:peers` | `mempalace_mesh_peers` and `/statusz`: hub, recent clients, mesh peers. Under the mod it leaves the menu on a single hub with no hook-side transport, where it has nothing to report. |
 
 ## Requirements
 

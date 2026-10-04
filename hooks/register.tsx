@@ -30,6 +30,9 @@ const pending = atom({ plugin: 'mempalace-sharedbrain', key: 'pending' } as cons
 const watchSeen = atom({ plugin: 'mempalace-sharedbrain', key: 'watchSeen' } as const, '')
 const knownServer = atom({ plugin: 'mempalace-sharedbrain', key: 'server' } as const, '')
 const isPaneOpen = atom({ plugin: 'mempalace-sharedbrain', key: 'isPaneOpen' } as const, false)
+// Whether /mempalace-sharedbrain:peers has anything to show here: mesh peers on the hub, or a
+// hook-side transport that can read /statusz. Unknown until the first check, so it starts hidden.
+const peersRelevant = atom({ plugin: 'mempalace-sharedbrain', key: 'peersRelevant' } as const, false)
 
 type Caps = Record<string, { present: boolean; version: string }>
 type ModContext = {
@@ -38,6 +41,7 @@ type ModContext = {
   cursor: string
   watch: { armed?: boolean; since_event_id?: string; types?: string[]; correlation_id?: string; topic?: string }
   mcp_server: string
+  transport: string
   inbox_limit: number
   sweep: boolean
   wake_types: string[]
@@ -329,6 +333,47 @@ async function settle($: Api, cwd: string): Promise<void> {
   await update($, pending, () => null)
 }
 
+/** Identities seen writing to the hub, newest first, as plain text for /mempalace-sharedbrain:sessions. */
+export function sessionsTable(recent: HubEvent[], me: string, server: string, now: number): string {
+  const seen = new Map<string, { last: string; count: number }>()
+  for (const event of recent) {
+    const who = clean(event.from_agent, 80)
+    if (!who) continue
+    const entry = seen.get(who) ?? { last: '', count: 0 }
+    entry.count += 1
+    const at = String(event.created_at ?? '')
+    if (at > entry.last) entry.last = at
+    seen.set(who, entry)
+  }
+  if (!seen.size) return `No events on the hub through "${server}" yet.`
+  const ago = (iso: string) => {
+    const ms = now - Date.parse(iso)
+    if (!Number.isFinite(ms)) return iso || 'unknown'
+    const minutes = Math.round(ms / 60_000)
+    if (minutes < 60) return `${Math.max(minutes, 0)} min ago`
+    const hours = Math.round(minutes / 60)
+    return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+  }
+  const rows = [...seen.entries()].sort((a, b) => (a[1].last < b[1].last ? 1 : -1))
+  const width = Math.max(...rows.map(([who]) => who.length), 8)
+  const oldest = recent.reduce((min, e) => (String(e.created_at ?? '') < min ? String(e.created_at ?? '') : min), String(recent[0]?.created_at ?? ''))
+  const lines = [
+    `Agents writing to the hub (last ${recent.length} events, since ${oldest.slice(0, 10)}, through "${server}"):`,
+    '',
+    ...rows.map(([who, entry]) => {
+      const notes: string[] = []
+      if (who === me) notes.push('this session')
+      if ((who.match(/:/g) ?? []).length < 2) notes.push('fixed or legacy name')
+      return `  ${who.padEnd(width)}  ${ago(entry.last).padEnd(12)}  ${String(entry.count).padStart(3)} events${notes.length ? '  (' + notes.join(', ') + ')' : ''}`
+    }),
+    '',
+    'Send work to a host:harness:project identity. Every session in that project folder on that machine shares it.',
+    'Agents such as Hermes keep fixed names; a Claude Code machine still on an old flat name has not moved to the new form yet.',
+    'This is who has written recently, not a live connection list. To pick a machine by what it can do: /mempalace-sharedbrain:capabilities who',
+  ]
+  return lines.join('\n')
+}
+
 function statusText(h: HubStatus | null, pending: number): string | undefined {
   if (!h) return undefined
   if (h.error) return h.isRetrying ? 'mempalace: connecting' : 'mempalace: hub unreachable'
@@ -345,6 +390,23 @@ async function refreshStatus($: Api): Promise<void> {
 }
 
 // ---- hooks ------------------------------------------------------------------
+
+/** Shows /mempalace-sharedbrain:peers only where it can report something. Best effort, never throws. */
+async function notePeersRelevance($: Api, ctx: ModContext, server: string): Promise<void> {
+  let relevant = ctx.transport === 'http'
+  if (!relevant) {
+    try {
+      const mesh = await callTool($, server, 'mempalace_mesh_peers', {})
+      relevant = Array.isArray(mesh.peers) && mesh.peers.length > 0
+    } catch {
+      return // unknown: leave the menu as it is
+    }
+  }
+  if ((await read($, peersRelevant)) !== relevant) {
+    await update($, peersRelevant, () => relevant)
+    $.ui.invalidate('command.describe')
+  }
+}
 
 const SWEEP_TRIES = 3 // prompts; a claude.ai connector can still be connecting on the first one
 
@@ -364,6 +426,7 @@ async function firstSweep($: Api, ctx: ModContext, limitMs: number, isLastTry: b
       throw new Error(`no answer within ${Math.round(limitMs / 100) / 10}s`)
     }
     const { server, done } = settled
+    await notePeersRelevance($, ctx, server)
     await update($, hub, () => ({ identity: ctx.identity, server, cursor: ctx.cursor, isListening: Boolean(ctx.watch?.armed), openTasks: done.open, checkedAt: Date.now(), error: '', isRetrying: false }))
     return { ok: true, text: done.text, lastId: done.lastId }
   } catch (error) {
@@ -512,6 +575,27 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'MemPalace shared brain', focus: true, closeOnEscape: true })
     await update($, isPaneOpen, () => true)
     return { text: 'MemPalace pane opened. Escape, the Close button or /mempalace close closes it.' }
+  })
+
+  // /mempalace-sharedbrain:peers reports the hub's mesh peers and, with a hook-side transport, /statusz.
+  // A single hub reached through the session's connector has neither, so the command leaves the menu
+  // there (it still runs when typed in full).
+  on('command.describe', { command: 'mempalace-sharedbrain:peers' }, async ($, e, next) => {
+    const described = await next(e)
+    return (await read($, peersRelevant)) ? described : { ...described, isHidden: true }
+  })
+
+  // /mempalace-sharedbrain:sessions: who writes to the hub, answered here without the model. The
+  // command file beside it tells the model to build the same list on builds without mods.
+  on('command.run', { command: 'mempalace-sharedbrain:sessions' }, async $ => {
+    try {
+      const cwd = await $.session.root()
+      const ctx = await modContext($, cwd)
+      const { server, value: recent } = await onServer($, ctx.mcp_server, name => events($, name, { limit: 200 }))
+      return { text: sessionsTable(recent, ctx.identity, server, Date.now()) }
+    } catch (error) {
+      return { text: `Could not read the hub: ${clean((error as Error).message, 200)}` }
+    }
   })
 
   // However the pane closes (Escape, its close mark, the Close button, an unload), remember it.

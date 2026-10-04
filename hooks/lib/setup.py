@@ -359,6 +359,7 @@ def cmd_mod_context(cfg, args):
     """Everything local the mod needs, in one call, so the mod never reimplements identity,
     cursor or watch state. Keys are stable; the mod reads them by name."""
     import capabilities as K
+    import sb_probe as P
     ident = C.identity(cfg, args.cwd)
     caps = {}
     try:
@@ -373,6 +374,7 @@ def cmd_mod_context(cfg, args):
         "cursor": C.read_cursor(ident),
         "watch": C.read_watch(ident),
         "mcp_server": cfg["hub"].get("mcp_server") or "",
+        "transport": P.resolve_transport(cfg["hub"]),
         "inbox_limit": cfg["probe"].get("inbox_limit", 10),
         "sweep": bool(cfg["probe"].get("enabled", True)),
         "wake_types": cfg["wake"].get("types") or [],
