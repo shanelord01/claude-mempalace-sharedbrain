@@ -20,7 +20,11 @@ MEMPALACE SHARED BRAIN block in this session's context.
    commit (a commit hash, not a branch name), exact definition of done, and `topic` if the work is
    a named lane. Show the complete draft and wait for confirmation.
    Requirements, when the work needs them, are part of the draft.
-3. Create it with `mempalace_task_create` (project, from_agent, to_agent, goal, branch,
+3. If the worker should carry the task out by itself (its bridge in mode `act`), send it with
+   `mempalace_event_append` as below, not `mempalace_task_create`: only an appended event can carry
+   the signature the worker needs, and the plugin signs it once the person confirms in the dialog
+   it shows. A task created with `mempalace_task_create` arrives unsigned and is only read there.
+   Otherwise, create it with `mempalace_task_create` (project, from_agent, to_agent, goal, branch,
    base_commit, done). When there are requirements, the goal's first line is
    `Requires: <req>, <req>`; task_create has no metadata field, and workers read that line. It returns the stored `task.request` and a handoff line. For non-code work
    use `mempalace_event_append` with `type=task.request`, `stream=project/<name>`,

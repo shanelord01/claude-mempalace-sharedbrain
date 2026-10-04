@@ -69,6 +69,54 @@ module tags each event it passes down, and the command hooks beneath leave out w
 Where mods do not load (older builds, or a Claude Code plugin running in another harness through a
 bridge), the command hooks work as before.
 
+**Bridges messages between agents.** With the mod loaded, the hub works as a message bridge
+(`docs/bridge.md` has the protocol, which the Hermes plugin
+[hermes-mempalace-sharedbrain](https://github.com/shanelord01/hermes-mempalace-sharedbrain) follows
+too). Send a task to an identity such as `mac-mini:claude:projects`. If a session with that identity
+is running, its mod finds the task within a minute and starts a turn to deal with it, with nobody
+at the keyboard. If none is running, the task waits on the hub, and the next session opened in that
+folder picks it up before anyone types. By default (mode `read`) that turn reads the message and
+reports it to the person, and starts no work. With `/mempalace-sharedbrain:bridge mode act` on a
+machine, a task addressed to the identity by name, signed by a machine this one trusts, with its
+requirements met, is carried out there: the session posts a receipt, claims the task, does the
+work, replies and closes it. Everything else (broadcasts, replies, unsigned or untrusted messages)
+is read and reported to the person, with no work started. Each automatic turn opens with one line
+per message, such as `📨 From mac-mini:claude:app · 🔐 signature verified (SHA256:…)`. The receiving
+machine writes that mark from its own check, and never from anything the sender wrote. Two sessions sharing an
+identity never both take the same task. Listening is on by default with the bridge, and the
+background checks cost no model tokens. Only a turn the bridge starts does.
+
+To stop two agents answering each other forever, each thread gets at most 4 automatic turns and
+the bridge at most 12 an hour. The fourth turn summarises everything done on the thread, tells the
+other agent it has paused, and asks the person whether to go on
+(`/mempalace-sharedbrain:bridge continue <thread>`). Until then, mail on that thread waits for the
+person's prompts. `mode off` turns the bridge off on that machine.
+
+**Signs messages, and pairs machines with a 6-digit code.** Sender names on the hub are free text,
+so carrying out a task needs a signature. Each machine has its own Ed25519 bridge key, and signs
+with OpenSSH's `ssh-keygen -Y sign`. Keep the key in 1Password: create an SSH key item (Ed25519) named
+`MemPalace bridge <host>` (for example `MemPalace bridge bazzite`) and turn on 1Password's SSH agent
+(Settings > Developer). The private key then never touches the disk, so no command a session runs
+can read it, and 1Password asks you before each signature. Leave the prompt's "approve for the
+session" box unticked: once it is ticked, 1Password signs anything from that session without asking
+until it locks, including a signature a session makes directly from the shell. Locking 1Password
+clears it. Without that item the plugin uses a key
+file and `/mempalace-sharedbrain:trust show` warns that a session could sign without asking. Replies are signed
+automatically. By default a task is signed only after the person confirms it in a dialog that shows
+where it is going and what it says, once per recipient per session (the dialog offers "always sign
+tasks to this recipient in this session"). `/mempalace-sharedbrain:bridge sign ask` asks for every
+task, and `sign auto` stops asking on that machine. A turn started or carried by hub mail never signs
+a task, whatever the setting. To let machine B
+trust machine A, run `/mempalace-sharedbrain:trust pair` on A. It sends A's key to the hub and shows
+a 6-digit code. Type `/mempalace-sharedbrain:trust pair <code>` on B (and any other machine that
+should trust A) within 10 minutes. `/mempalace-sharedbrain:trust` lists each machine's key and
+whether this one trusts it. `trust approve <identity> <fingerprint>` is the manual route, and
+`trust revoke` withdraws trust.
+
+**Counts a task closed only on good authority.** A closing ack or reply counts when it comes from
+the task's sender, from the identity it was addressed to by name, or from this identity. Anyone may
+close a broadcast, and the inbox says who closed it and how.
+
 **Commands.**
 
 | Command | Does |
@@ -76,11 +124,13 @@ bridge), the command hooks work as before.
 | `/mempalace-sharedbrain:setup` | Identity, the model's and the hook's path to the hub, rules block, live check. |
 | `/mempalace-sharedbrain:rules` | Render, check or install the canonical rules block, diff first. |
 | `/mempalace-sharedbrain:inbox` | Sweep from the cursor, report verbatim, claim only on a go-ahead, record the cursor. |
-| `/mempalace-sharedbrain:listen` | Arm or disarm the wake check and post the announcement. |
+| `/mempalace-sharedbrain:listen` | Arm or disarm the wake check and post the announcement. The bridge arms it by default. |
+| `/mempalace-sharedbrain:trust` | `pair` to send this machine's key and show a 6-digit code; `pair <code>` on another machine to trust it; `list`, `show`, `approve <identity> <fingerprint>`, `revoke <principal>`. |
+| `/mempalace-sharedbrain:bridge` | The bridge's mode, limits and threads with automatic turns; `continue` a thread paused for you; `mode act\|read\|off`. |
 | `/mempalace-sharedbrain:delegate` | `mempalace_task_create` with a preview, optional `--requires` to pick a capable host, then arm, wait, verify, ack, file the outcome. |
 | `/mempalace-sharedbrain:checkpoint` | `mempalace_checkpoint`: drawers and a diary entry in one call. |
 | `/mempalace-sharedbrain:capabilities` | Probe this machine, publish its profile, check requirements, find hosts that meet them. |
-| `/mempalace-sharedbrain:sessions` | Who is on the hub: each session running the mod checks in (one drawer per identity, refreshed every 30 minutes), and this lists them newest first, marking idle ones. Falls back to the event log before anyone has checked in. |
+| `/mempalace-sharedbrain:sessions` | Who is on the hub: each session running the mod checks in (one drawer per identity, refreshed every 30 minutes), and this lists them newest first, marking idle ones, listening ones and their bridge mode. Falls back to the event log before anyone has checked in. |
 | `/mempalace-sharedbrain:peers` | `mempalace_mesh_peers` and `/statusz`: hub, recent clients, mesh peers. Under the mod it leaves the menu on a single hub with no hook-side transport, where it has nothing to report. |
 
 ## Requirements

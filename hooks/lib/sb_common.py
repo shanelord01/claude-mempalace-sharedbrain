@@ -31,6 +31,8 @@ PENDING_DIR = os.path.join(STATE_DIR, "pending")
 CURSOR_DIR = os.path.join(STATE_DIR, "cursors")
 WATCH_DIR = os.path.join(STATE_DIR, "watch")
 PRESENCE_DIR = os.path.join(STATE_DIR, "presence")
+BRIDGE_DIR = os.path.join(STATE_DIR, "bridge")
+BRIDGE_LOCK_STALE_SECONDS = 6 * 3600
 LOG_FILE = os.path.join(STATE_DIR, "hook.log")
 LOG_MAX_BYTES = 1024 * 1024
 
@@ -93,13 +95,25 @@ DEFAULTS = {
         "room": "presence",
         "interval_minutes": 30,
     },
+    # The hub as a message bridge (docs/bridge.md): listening is on unless switched off, and new
+    # mail starts a turn. mode: read (every message is reported only), act (tasks addressed to this
+    # identity by name, signed with a key the person approved, are carried out) or off (mail waits
+    # for the next prompt).
+    "bridge": {
+        "mode": "read",
+        "max_turns_per_hour": 12,
+        "max_turns_per_thread": 4,
+        # Signing a task another machine will carry out: ask each time, ask once per recipient per
+        # session (the default), or sign without asking (never in a turn hub mail started or carried).
+        "sign_tasks": "session",
+    },
     "extra_context": [],
 }
 
 
 def ensure_dirs():
     """State dirs, readable by this user only (snapshots hold conversation text)."""
-    for path in (STATE_DIR, PENDING_DIR, CURSOR_DIR, WATCH_DIR, PRESENCE_DIR):
+    for path in (STATE_DIR, PENDING_DIR, CURSOR_DIR, WATCH_DIR, PRESENCE_DIR, BRIDGE_DIR):
         os.makedirs(path, exist_ok=True)
         try:
             os.chmod(path, 0o700)
@@ -295,6 +309,91 @@ def read_presence(ident):
 def write_presence(ident, drawer_id):
     _write_json(presence_path(ident), {"identity": ident, "drawer_id": drawer_id,
                                        "updated": time.strftime("%Y-%m-%dT%H:%M:%S")})
+
+
+def bridge_lock(ident, event_id, owner):
+    """Takes this identity's lock on one event, so of two sessions sharing the identity only one acts
+    on it. True when this owner holds it (newly, already, or over a stale lock)."""
+    ensure_dirs()
+    folder = os.path.join(BRIDGE_DIR, identity_filename(ident))
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    path = os.path.join(folder, safe_id(event_id) + ".lock")
+    record = {"event_id": event_id, "owner": owner, "taken": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        held = _read_json(path)
+        if held.get("owner") == owner:
+            return True
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            age = 0
+        if age < BRIDGE_LOCK_STALE_SECONDS:
+            return False
+        _write_json(path, record)
+        return True
+    with os.fdopen(fd, "w") as fh:
+        json.dump(record, fh)
+    return True
+
+
+def bridge_state_path(ident):
+    return os.path.join(BRIDGE_DIR, identity_filename(ident) + ".threads.json")
+
+
+def read_bridge_state(ident):
+    state = _read_json(bridge_state_path(ident))
+    state.setdefault("threads", {})
+    state.setdefault("turns", [])
+    return state
+
+
+def write_bridge_state(ident, state):
+    _write_json(bridge_state_path(ident), state)
+
+
+def bridge_turn(ident, threads, per_thread, per_hour, now=None):
+    """Counts one automatic turn covering `threads`. Returns {allowed, reason, threads: {t: {turns,
+    is_last}}}. A paused thread, or a full hour, refuses the turn and counts nothing."""
+    now = time.time() if now is None else now
+    state = read_bridge_state(ident)
+    recent = [t for t in state["turns"] if now - t < 3600]
+    paused = [t for t in threads if (state["threads"].get(t) or {}).get("paused")]
+    if paused:
+        return {"allowed": False, "reason": "paused", "paused": paused, "threads": {}}
+    if len(recent) >= per_hour:
+        return {"allowed": False, "reason": "hourly limit", "paused": [], "threads": {}}
+    out = {}
+    for t in threads:
+        entry = state["threads"].get(t) or {"turns": 0, "paused": False}
+        entry["turns"] = int(entry.get("turns", 0)) + 1
+        entry["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+        is_last = entry["turns"] >= per_thread
+        if is_last:
+            entry["paused"] = True
+        state["threads"][t] = entry
+        out[t] = {"turns": entry["turns"], "is_last": is_last}
+    state["turns"] = recent + [now]
+    # Keep the file small: forget threads untouched for a fortnight that are not paused.
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now - 14 * 86400))
+    state["threads"] = {k: v for k, v in state["threads"].items() if v.get("paused") or v.get("updated", "") >= cutoff}
+    write_bridge_state(ident, state)
+    return {"allowed": True, "reason": "", "paused": [], "threads": out}
+
+
+def bridge_continue(ident, threads=None):
+    """Resets the count of the given threads (every paused one when none are given). Returns them."""
+    state = read_bridge_state(ident)
+    names = list(threads or [k for k, v in state["threads"].items() if v.get("paused")])
+    for name in names:
+        state["threads"].pop(name, None)
+    write_bridge_state(ident, state)
+    return names
+
+
+def bridge_paused(ident):
+    return sorted(k for k, v in read_bridge_state(ident)["threads"].items() if v.get("paused"))
 
 
 def safe_id(value):

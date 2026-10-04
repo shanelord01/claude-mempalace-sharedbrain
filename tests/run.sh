@@ -12,6 +12,7 @@ export CLAUDE_PLUGIN_ROOT="$ROOT"
 export MEMPALACE_SHAREDBRAIN_CONFIG="$TMP/config.json"
 export MEMPALACE_SHAREDBRAIN_STATE="$TMP/state"
 unset MEMPALACE_SHAREDBRAIN_PYTHON
+export MEMPALACE_SHAREDBRAIN_AGENT_SOCK=""   # never the real 1Password agent; the agent tests start their own
 export CLAUDE_PROJECT_DIR=/tmp/demo   # the workspace the scripts and hooks compose the project from
 PY="$(command -v python3)"
 SS="$ROOT/hooks/bin/session-start.sh"
@@ -353,6 +354,105 @@ expect_missing "session start leaves the sweep to the mod" "$OUT" "Inbox sweep (
 expect_eq "wake stands down under the mod" "$(echo '{"session_id":"m1","cwd":"/tmp/demo","prompt":"hi","mempalace_sharedbrain_mod":"active"}' | "$WAKE")" "{}"
 expect_contains "wake still runs without the mod" "$(echo '{"session_id":"m1","cwd":"/tmp/demo","prompt":"hi"}' | "$WAKE" | context_of)" "MEMPALACE WAKE CHECK"
 "$SETUP" listen disarm >/dev/null
+
+echo "# bridge"
+rm -f "$TMP/state/watch/"*.json
+OUT="$("$SETUP" mod-context --cwd /tmp/demo)"
+expect_contains "the bridge reads by default" "$OUT" '"mode": "read"'
+"$SETUP" set bridge.mode bogus >/dev/null 2>&1; expect_eq "set refuses an unknown mode" "$?" "1"
+"$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{})["mode"]="bogus"; json.dump(d,open(p,"w"))' "$TMP/config.json"
+expect_contains "an unknown mode fails closed to read" "$("$SETUP" mod-context --cwd /tmp/demo)" '"mode": "read"'
+"$SETUP" set bridge.mode act >/dev/null
+expect_contains "the bridge arms listening" "$OUT" '"auto": true'
+"$SETUP" listen disarm >/dev/null
+expect_contains "a disarm sticks" "$("$SETUP" mod-context --cwd /tmp/demo)" '"disarmed": true'
+"$SETUP" listen arm >/dev/null
+expect_eq "first claim wins" "$("$SETUP" bridge claim evt_a --owner s1; echo $?)" "$(printf 'claimed\n0')"
+expect_eq "same owner keeps it" "$("$SETUP" bridge claim evt_a --owner s1 >/dev/null; echo $?)" "0"
+expect_eq "another session loses it" "$("$SETUP" bridge claim evt_a --owner s2 >/dev/null; echo $?)" "3"
+"$SETUP" bridge turn -- "--cwd" >/dev/null 2>&1; expect_eq "an id that looks like an option is refused" "$?" "1"
+"$SETUP" set bridge.max_turns_per_thread 2 >/dev/null
+expect_contains "turn 1 of 2" "$("$SETUP" bridge turn task_x)" '"task_x": {"turns": 1, "is_last": false}'
+expect_contains "turn 2 is the last" "$("$SETUP" bridge turn task_x)" '"task_x": {"turns": 2, "is_last": true}'
+expect_contains "a paused thread starts no turn" "$("$SETUP" bridge turn task_x)" '"reason": "paused"'
+expect_contains "mod-context lists the paused thread" "$("$SETUP" mod-context --cwd /tmp/demo)" '"paused": ["task_x"]'
+expect_contains "continue resumes it" "$("$SETUP" bridge continue task_x)" "continuing task_x"
+expect_contains "after continue it counts from one" "$("$SETUP" bridge turn task_x)" '"turns": 1'
+"$SETUP" set bridge.max_turns_per_hour 2 >/dev/null
+"$SETUP" bridge turn task_y >/dev/null
+expect_contains "the hourly limit holds" "$("$SETUP" bridge turn task_z)" '"reason": "hourly limit"'
+OUT="$("$PY" - "$ROOT/hooks/lib" <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1])
+import sb_probe as P
+named = {"id": "evt_n", "from_agent": "s:claude:a", "to_agent": "me:claude:b", "correlation_id": "t_n"}
+cast = {"id": "evt_b", "from_agent": "s:claude:a", "to_agent": "*"}
+ack = lambda by, of: {"type": "event.ack", "status": "applied", "from_agent": by, "metadata": {"ack_of": of}}
+print(sorted(P.closed_tasks([ack("x:claude:z", "evt_n")], [named], "me:claude:b")[0]),
+      sorted(P.closed_tasks([ack("s:claude:a", "evt_n")], [named], "me:claude:b")[0]),
+      sorted(P.closed_tasks([ack("x:claude:z", "evt_b")], [cast], "me:claude:b")[0]))
+PYEOF
+)"
+expect_eq "closures count only from sender, addressee or self; anyone for a broadcast" "$OUT" "[] ['evt_n'] ['evt_b']"
+
+"$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{}).pop("sign_tasks",None); json.dump(d,open(p,"w"))' "$TMP/config.json"
+expect_contains "signing asks once per recipient by default" "$("$SETUP" bridge status)" '"sign_tasks": "session"'
+"$SETUP" set bridge.sign_tasks always >/dev/null 2>&1; expect_eq "set refuses an unknown signing setting" "$?" "1"
+"$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["bridge"]["sign_tasks"]="sometimes"; json.dump(d,open(p,"w"))' "$TMP/config.json"
+expect_contains "an unknown signing setting fails closed to ask" "$("$SETUP" bridge status)" '"sign_tasks": "ask"'
+"$SETUP" set bridge.sign_tasks session >/dev/null
+
+echo "# signing and pairing"
+if command -v ssh-keygen >/dev/null; then
+  KEYINFO="$("$SETUP" sign show)"
+  expect_contains "a bridge key is created" "$KEYINFO" '"available": true'
+  expect_eq "the key is private" "$(stat -c %a "$TMP/bridge_ed25519")" "600"
+  expect_contains "this machine trusts its own key" "$(cat "$TMP/trusted_signers")" 'office-desktop:* namespaces="mempalace-bridge" ssh-ed25519'
+  SIG="$(printf '%s' '{"from":"office-desktop:claude:demo","to":"mac:claude:app","type":"task.request","correlation":"t1","body":"go  \ncafé"}' | "$SETUP" sign make --cwd /tmp/demo)"
+  mkev() { "$PY" -c "import json,sys; e={'id':'evt_s1','from_agent':'office-desktop:claude:demo','to_agent':'mac:claude:app','type':'task.request','correlation_id':'t1','body':'go  \ncafé','metadata':{'bridge_sig':json.loads(sys.argv[1])}}; $1; print(json.dumps(e))" "$SIG"; }
+  expect_contains "a signed event verifies" "$(mkev pass | "$SETUP" sign verify)" '"ok": true'
+  expect_contains "the fingerprint shown is the verifying key's" "$(mkev "e['metadata']['bridge_sig']['key']='SHA256:FAKE'" | "$SETUP" sign verify)" "$(echo "$KEYINFO" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["fingerprint"])')"
+  expect_contains "a changed body fails" "$(mkev "e['body']+='!'" | "$SETUP" sign verify)" '"ok": false'
+  expect_contains "another recipient fails" "$(mkev "e['to_agent']='x:claude:y'" | "$SETUP" sign verify)" '"ok": false'
+  expect_contains "a replay on another event fails" "$(mkev "e['id']='evt_s2'" | "$SETUP" sign verify)" "replayed signature"
+  expect_contains "an old signature fails" "$(mkev "e['metadata']['bridge_sig']['signed_at']='2026-01-01T00:00:00Z'" | "$SETUP" sign verify)" "older than 14 days"
+  expect_contains "unsigned is reported" "$(mkev "e['metadata']={}" | "$SETUP" sign verify)" '"unsigned"'
+  printf '%s' '{"from":"other-host:claude:x","to":"a","type":"task.request"}' | "$SETUP" sign make --cwd /tmp/demo >/dev/null 2>&1
+  expect_eq "it signs only for this machine's identities" "$?" "1"
+  # A second machine, with its own config, pairs with this one.
+  OTHER="$TMP/other.json"; MEMPALACE_SHAREDBRAIN_CONFIG="$OTHER" "$SETUP" init --host mac --transport none >/dev/null
+  OFFER="$(MEMPALACE_SHAREDBRAIN_CONFIG="$OTHER" CLAUDE_PROJECT_DIR=/tmp/app "$SETUP" trust offer --cwd /tmp/app)"
+  CODE="$(echo "$OFFER" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["code"])')"
+  expect_missing "the code is not in the hub request" "$(echo "$OFFER" | "$PY" -c 'import json,sys;print(json.dumps(json.load(sys.stdin)["offer"]))')" "$CODE"
+  OFFERS="$(echo "$OFFER" | "$PY" -c 'import json,sys;o=json.load(sys.stdin)["offer"];print(json.dumps([{"id":"evt_p","type":"bridge.pair","from_agent":o["identity"],"metadata":{"bridge_pair":o}}]))')"
+  echo "$OFFERS" | "$SETUP" trust accept "$(printf %06d $(( (10#$CODE + 1) % 1000000 )))" >/dev/null 2>&1
+  expect_eq "a wrong code pairs nothing" "$?" "1"
+  expect_contains "the right code pairs" "$(echo "$OFFERS" | "$SETUP" trust accept "$CODE")" "for mac:*"
+  expect_contains "the paired key is trusted for its host" "$("$SETUP" trust list)" '"principal": "mac:*"'
+  echo "x" | "$SETUP" trust approve mac:claude:app >/dev/null 2>&1
+  expect_eq "approve without a fingerprint is refused" "$?" "1"
+  expect_contains "revoke" "$("$SETUP" trust revoke 'mac:*')" "revoked 1 key"
+  # A plain ssh-agent stands in for 1Password's: same socket protocol, keys named by comment.
+  AG="$(mktemp -d /tmp/sbag.XXXX)"; mkdir -p "$TMP/agent"; AGCFG="$TMP/agent/config.json"
+  eval "$(ssh-agent -a "$AG/s")" >/dev/null
+  agent() { MEMPALACE_SHAREDBRAIN_CONFIG="$AGCFG" MEMPALACE_SHAREDBRAIN_AGENT_SOCK="$AG/s" "$SETUP" "$@"; }
+  MEMPALACE_SHAREDBRAIN_CONFIG="$AGCFG" "$SETUP" init --host agenthost --transport none >/dev/null
+  expect_contains "without a 1Password key it falls back to a file, with a warning" "$(agent sign show)" '"source": "file"'
+  expect_contains "the fallback warns that a session could sign without asking" "$(agent sign show)" "could sign without asking"
+  MEMPALACE_SHAREDBRAIN_CONFIG="$AGCFG" "$SETUP" set bridge.key_source 1password >/dev/null
+  expect_contains "key_source 1password never uses a file" "$(agent sign show)" '"available": false'
+  MEMPALACE_SHAREDBRAIN_CONFIG="$AGCFG" "$SETUP" set bridge.key_source auto >/dev/null
+  ssh-keygen -q -t ed25519 -N "" -C "MemPalace bridge agenthost" -f "$AG/k" && SSH_AUTH_SOCK="$AG/s" ssh-add -q "$AG/k" && rm -f "$AG/k"
+  expect_contains "the key named for this machine in the agent is used" "$(agent sign show)" '"source": "1password"'
+  expect_eq "the old key file is removed" "$(ls "$TMP/agent" | grep -c "^bridge_ed25519")" "0"
+  ASIG="$(printf '%s' '{"from":"agenthost:claude:demo","to":"x:claude:y","type":"task.request","correlation":"c1","body":"hi"}' | agent sign make --cwd /tmp/demo)"
+  expect_contains "it signs through the agent" "$("$PY" -c "import json,sys; print(json.dumps({'id':'ea','from_agent':'agenthost:claude:demo','to_agent':'x:claude:y','type':'task.request','correlation_id':'c1','body':'hi','metadata':{'bridge_sig':json.loads(sys.argv[1])}}))" "$ASIG" | agent sign verify)" '"ok": true'
+  kill "$SSH_AGENT_PID"
+  expect_contains "with the agent gone it does not fall back to a file" "$(agent sign show)" '"available": false'
+  expect_eq "and still no key file" "$(ls "$TMP/agent" | grep -c "^bridge_ed25519")" "0"
+  rm -rf "$AG"
+else
+  ok "ssh-keygen absent: signing checks skipped"
+fi
 
 echo "# permissions"
 expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"

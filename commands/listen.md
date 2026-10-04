@@ -5,6 +5,10 @@ argument-hint: "[arm [--correlation-id ID] [--topic T] | disarm | status]"
 
 # Listen: the wake check
 
+With the bridge on (`/mempalace-sharedbrain:bridge`, mode `act` or `read`, the default), listening
+is armed automatically for every identity and new mail starts a turn of its own. `disarm` switches
+it off for this identity and leaves a record, so the bridge does not arm it again until `arm`.
+
 The shared-brain block says to arm a watcher when the user asks you to listen, when you claim a
 task, or when you delegate, and never at session start. A Claude Code session cannot run
 `mempalace logstream watch` in the background and, as a remote MCP client, should not. This

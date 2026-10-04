@@ -24,6 +24,10 @@
     setup.py capabilities published HASH DRAWER_ID   record a completed publish
     setup.py capabilities check REQ...  does this machine meet requirements like xcode>=27 memory-gb>=32
     setup.py presence get | set DRAWER_ID | clear [--cwd DIR]   this identity's check-in drawer
+    setup.py bridge status | claim EVENT_ID --owner O | turn THREAD... | continue [THREAD... | --all]
+    setup.py sign show | make | verify  (event JSON on stdin)   bridge message signing
+    setup.py trust list | approve IDENTITY --fingerprint F (check-in on stdin) | revoke PRINCIPAL
+    setup.py trust offer | accept CODE (pairing requests on stdin)   6-digit pairing
     setup.py mod-context [--cwd DIR]    one JSON object with what the mod needs (identity, cursor, watch, ...)
 
 init keeps any existing settings and changes only the flags you pass.
@@ -124,6 +128,12 @@ def _coerce(value):
 
 
 def cmd_set(cfg, args):
+    if args.key == "bridge.mode" and args.value not in ("act", "read", "off"):
+        print("bridge.mode must be act, read or off", file=sys.stderr)
+        return 1
+    if args.key == "bridge.sign_tasks" and args.value not in ("ask", "session", "auto"):
+        print("bridge.sign_tasks must be ask, session or auto", file=sys.stderr)
+        return 1
     node = cfg
     keys = args.key.split(".")
     for key in keys[:-1]:
@@ -202,7 +212,8 @@ def cmd_listen(cfg, args):
         print("watch cursor for %s is now %s" % (ident, event_id))
         return 0
     if args.action == "disarm":
-        C.clear_watch(ident)
+        # A record, not an empty file: the bridge re-arms listening only when there is none.
+        C.write_watch(ident, {"armed": False, "disarmed": True})
         print("listening disarmed for %s" % ident)
         print()
         print("Declared-idle statement to post or say, per the protocol:")
@@ -356,12 +367,31 @@ def cmd_capabilities(cfg, args):
     return 0
 
 
+def _signing(cfg, bridge):
+    if bridge["mode"] == "off":
+        return {"available": False, "key": "", "fingerprint": "", "error": "bridge off"}
+    try:
+        import sb_sign as S
+        return S.ensure_key(cfg)
+    except Exception as exc:
+        return {"available": False, "key": "", "fingerprint": "", "error": str(exc)[:200]}
+
+
 def cmd_mod_context(cfg, args):
     """Everything local the mod needs, in one call, so the mod never reimplements identity,
     cursor or watch state. Keys are stable; the mod reads them by name."""
     import capabilities as K
     import sb_probe as P
     ident = C.identity(cfg, args.cwd)
+    bridge = bridge_settings(cfg)
+    watch = C.read_watch(ident)
+    if bridge["mode"] != "off" and not watch:
+        # The bridge listens unless listening was switched off for this identity (`listen disarm`
+        # leaves a record saying so). The watch starts at the inbox cursor; the mod skips anything
+        # the inbox sweep already showed.
+        watch = {"armed": True, "types": cfg["wake"].get("types") or ["task.request", "task.reply", "patch.ready"],
+                 "correlation_id": "", "topic": "", "since_event_id": C.read_cursor(ident), "auto": True}
+        C.write_watch(ident, watch)
     caps = {}
     try:
         result = K.current(cfg, quick=True)
@@ -374,6 +404,8 @@ def cmd_mod_context(cfg, args):
         "diary": C.diary_name(ident),
         "cursor": C.read_cursor(ident),
         "watch": C.read_watch(ident),
+        "bridge": dict(bridge, paused=C.bridge_paused(ident)),
+        "signing": _signing(cfg, bridge),
         "mcp_server": cfg["hub"].get("mcp_server") or "",
         "transport": P.resolve_transport(cfg["hub"]),
         "inbox_limit": cfg["probe"].get("inbox_limit", 10),
@@ -390,6 +422,142 @@ def cmd_mod_context(cfg, args):
             "drawer_id": C.read_presence(ident).get("drawer_id", ""),
         },
     }))
+    return 0
+
+
+def bridge_settings(cfg):
+    b = cfg.get("bridge") or {}
+    mode = str(b.get("mode") or "read").lower()
+    sign = str(b.get("sign_tasks") or "session").lower()
+    return {
+        # An unrecognised mode fails closed: read, never act.
+        "mode": mode if mode in ("act", "read", "off") else "read",
+        "max_turns_per_hour": int(b.get("max_turns_per_hour") or 12),
+        "max_turns_per_thread": max(1, int(b.get("max_turns_per_thread") or 4)),
+        # An unrecognised value fails closed: ask.
+        "sign_tasks": sign if sign in ("ask", "session", "auto") else "ask",
+    }
+
+
+def cmd_bridge(cfg, args):
+    ident = C.identity(cfg, args.cwd)
+    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,119}", item) for item in args.items or []):
+        print("thread and event ids are letters, digits and _ . : - only", file=sys.stderr)
+        return 1
+    settings = bridge_settings(cfg)
+    if args.action == "status":
+        state = C.read_bridge_state(ident)
+        import sb_sign as S
+        print(json.dumps({"identity": ident, **settings, "threads": state["threads"],
+                          "trusted": [{k: e[k] for k in ("principal", "fingerprint", "note")} for e in S.trust_list()]}, indent=2))
+        return 0
+    if args.action == "claim":
+        if not args.items or not args.owner:
+            print("usage: bridge claim <event id> --owner <session token>", file=sys.stderr)
+            return 1
+        held = C.bridge_lock(ident, args.items[0], args.owner)
+        print("claimed" if held else "held by another session")
+        return 0 if held else 3
+    if args.action == "turn":
+        if not args.items:
+            print("usage: bridge turn <thread> [<thread> ...]", file=sys.stderr)
+            return 1
+        print(json.dumps(C.bridge_turn(ident, args.items, settings["max_turns_per_thread"], settings["max_turns_per_hour"])))
+        return 0
+    names = C.bridge_continue(ident, None if args.all or not args.items else args.items)
+    if names:
+        print("continuing %s for %s: automatic turns may start again (up to %d each)" % (
+            ", ".join(names), ident, settings["max_turns_per_thread"]))
+    else:
+        print("no paused threads for %s" % ident)
+    return 0
+
+
+def cmd_sign(cfg, args):
+    """Signing for the mod: event fields arrive as JSON on stdin, never on a command line."""
+    import sb_sign as S
+    if args.action == "show":
+        print(json.dumps(S.ensure_key(cfg)))
+        return 0
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(data, (dict, list)):
+            raise ValueError
+    except ValueError:
+        print("expected a JSON object on stdin", file=sys.stderr)
+        return 1
+    if args.action == "make":
+        ident = C.identity(cfg, args.cwd)
+        host = ident.split(":")[0]
+        sender = str(data.get("from") or "")
+        if sender != ident and not sender.startswith(host + ":"):
+            print("refusing to sign for %s: this machine signs only for its own identities" % sender, file=sys.stderr)
+            return 1
+        try:
+            print(json.dumps(S.sign(cfg, data)))
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
+    # One event, or a list of them in one process.
+    result = [S.verify(e) for e in data if isinstance(e, dict)] if isinstance(data, list) else S.verify(data)
+    print(json.dumps(result))
+    return 0
+
+
+def cmd_trust(cfg, args):
+    import sb_sign as S
+    if args.action == "list":
+        print(json.dumps(S.trust_list(), indent=2))
+        return 0
+    if args.action == "revoke":
+        if not args.principal:
+            print("usage: trust revoke <principal>", file=sys.stderr)
+            return 1
+        n = S.trust_revoke(args.principal)
+        print("revoked %d key%s for %s" % (n, "" if n == 1 else "s", args.principal))
+        return 0
+    if args.action == "offer":
+        ident = C.identity(cfg, args.cwd)
+        try:
+            code, offer = S.pair_offer(cfg, ident)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps({"code": code, "offer": offer}))
+        return 0
+    if args.action == "accept":
+        # The code is the person's, typed into /mempalace-sharedbrain:trust pair. Pairing requests
+        # from the hub arrive on stdin.
+        try:
+            events = json.loads(sys.stdin.read() or "[]")
+            principal, fpr, who = S.pair_accept(args.principal or "", events if isinstance(events, list) else [],
+                                                C.host_label(cfg))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print("paired: trusted key %s from %s for %s" % (fpr, who, principal))
+        return 0
+    # approve: the identity's check-in drawer content arrives on stdin.
+    ident = (args.principal or "").strip()
+    if not S.PRINCIPAL_RE.match(ident) or "*" in ident:
+        print("usage: trust approve <identity> [--fingerprint SHA256:...] < check-in drawer content", file=sys.stderr)
+        return 1
+    if not args.fingerprint:
+        print("approve needs the fingerprint, read on the other machine with /mempalace-sharedbrain:trust show", file=sys.stderr)
+        return 1
+    key, published = S.key_from_checkin(sys.stdin.read())
+    if not key:
+        print("%s has published no bridge key in its check-in (it may run an older plugin)" % ident, file=sys.stderr)
+        return 1
+    try:
+        fpr = S.trust_add(S.principal_for(ident), key, "approved for %s" % ident, args.fingerprint)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if fpr != published:
+        print("warning: the check-in claims %s but the key's own fingerprint is %s" % (published, fpr), file=sys.stderr)
+    print("trusted key %s for %s" % (fpr, S.principal_for(ident)))
     return 0
 
 
@@ -487,6 +655,26 @@ def build_parser():
     p.add_argument("drawer_id", nargs="?")
     p.add_argument("--cwd")
     p.set_defaults(func=cmd_presence)
+
+    p = sub.add_parser("bridge")
+    p.add_argument("action", choices=["status", "claim", "turn", "continue"])
+    p.add_argument("items", nargs="*")
+    p.add_argument("--owner")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--cwd")
+    p.set_defaults(func=cmd_bridge)
+
+    p = sub.add_parser("sign")
+    p.add_argument("action", choices=["show", "make", "verify"])
+    p.add_argument("--cwd")
+    p.set_defaults(func=cmd_sign)
+
+    p = sub.add_parser("trust")
+    p.add_argument("action", choices=["list", "approve", "revoke", "offer", "accept"])
+    p.add_argument("principal", nargs="?")
+    p.add_argument("--cwd")
+    p.add_argument("--fingerprint")
+    p.set_defaults(func=cmd_trust)
 
     p = sub.add_parser("mod-context")
     p.add_argument("--cwd")

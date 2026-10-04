@@ -449,18 +449,39 @@ def list_events(client, **filters):
 TERMINAL = {"applied", "failed", "superseded"}
 
 
-def closed_tasks(events):
-    """Ids and correlation ids of tasks someone closed: an ack (by ack_of) or a reply (by correlation)
-    with a terminal status, from any agent. A broadcast one agent finished is done for everyone."""
+def closed_tasks(events, tasks=(), ident=""):
+    """Ids and correlation ids of tasks that are closed: an ack (by ack_of) or a reply (by correlation)
+    with a terminal status. It counts when it comes from the task's sender, from the identity the task
+    was addressed to by name, or from this identity. A broadcast anyone may close. Closures of tasks
+    not in `tasks` are judged without a sender to compare, so only this identity's count."""
+    by_id = {t.get("id"): t for t in tasks or [] if t.get("id")}
+    by_corr = {}
+    for t in tasks or []:
+        if t.get("correlation_id"):
+            by_corr.setdefault(t["correlation_id"], []).append(t)
+
+    def counts(closer, task):
+        if not task:
+            return closer == ident
+        if closer in (ident, task.get("from_agent")):
+            return True
+        to = task.get("to_agent") or ""
+        return to == "*" or closer == to
+
     ids, correlations = set(), set()
     for e in events or []:
         if str(e.get("status") or "").lower() not in TERMINAL:
             continue
+        if e.get("writer") and e.get("writer") != e.get("from_agent"):
+            continue  # the hub's authenticated author disagrees with the claimed one
+        closer = e.get("writer") or e.get("from_agent") or ""
         ack_of = (e.get("metadata") or {}).get("ack_of")
-        if ack_of:
+        if ack_of and counts(closer, by_id.get(ack_of)):
             ids.add(ack_of)
-        if e.get("type") == "task.reply" and e.get("correlation_id"):
-            correlations.add(e["correlation_id"])
+        corr = e.get("correlation_id")
+        if e.get("type") == "task.reply" and corr:
+            if any(counts(closer, t) for t in by_corr.get(corr, [None])):
+                correlations.add(corr)
     return ids, correlations
 
 
@@ -507,7 +528,7 @@ def run_probe(cfg, ident, cursor=""):
         my_correlations = {e.get("correlation_id") for e in mine if e.get("correlation_id")}
         my_ack_targets = {(e.get("metadata") or {}).get("ack_of") for e in mine if (e.get("metadata") or {}).get("ack_of")}
         closures = list_events(client, type="event.ack", limit=100) + list_events(client, type="task.reply", limit=100)
-        closed_ids, closed_correlations = closed_tasks(closures)
+        closed_ids, closed_correlations = closed_tasks(closures, tasks, ident)
         for task in tasks:
             item = summarise_event(task)
             if task.get("id") in closed_ids or (task.get("correlation_id") and task.get("correlation_id") in closed_correlations):

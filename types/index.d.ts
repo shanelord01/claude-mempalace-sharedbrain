@@ -11,7 +11,18 @@ export type InboxItem = {
   requires: string[]
   /** Requirements this machine cannot meet, from its capability probe. */
   unmet: string[]
+  /** The thread it belongs to: its correlation id, or its own id when it has none. */
+  thread?: string
+  /** What the bridge may do with it (docs/bridge.md): carry it out, or only report it. */
+  level?: 'act' | 'read'
+  /** The event's correlation id, when it has one (act level needs it). */
+  correlation?: string
+  /** This machine's own check of the event's signature; never what the sender claimed. */
+  sig?: SigCheck
 }
+
+/** The result of verifying an event's signature on this machine (hooks/lib/sb_sign.py). */
+export type SigCheck = { ok: boolean; reason: string; key: string }
 
 /** What the mod last learned about this session's place on the hub. */
 export type HubStatus = {

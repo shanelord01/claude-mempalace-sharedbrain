@@ -5,6 +5,9 @@ One JSON file per machine. `scripts/setup.sh` writes it; you can also edit it by
 | Path | Purpose | Override |
 |---|---|---|
 | `~/.config/mempalace-sharedbrain/config.json` | Settings | `MEMPALACE_SHAREDBRAIN_CONFIG` |
+| `~/.config/mempalace-sharedbrain/bridge_1password.pub` | The public half of this machine's bridge key when it lives in 1Password (the private half never leaves 1Password) | follows the config file's folder |
+| `~/.config/mempalace-sharedbrain/bridge_ed25519` (and `.pub`) | The fallback bridge key file, used only when no 1Password key was ever found, readable by this user only. Removed once the 1Password key is in use | follows the config file's folder |
+| `~/.config/mempalace-sharedbrain/trusted_signers` | Keys this machine trusts to send work (OpenSSH allowed-signers format). `/mempalace-sharedbrain:trust` manages it | follows the config file's folder |
 | `~/.local/state/mempalace-sharedbrain/` | Inbox cursors, watch state, snapshots, saved instruction files, `hook.log` | `MEMPALACE_SHAREDBRAIN_STATE` |
 
 `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` are honoured when set. `MEMPALACE_SHAREDBRAIN_PYTHON`
@@ -70,6 +73,12 @@ directory is created readable by the current user only.
 | `presence.enabled` | `true` | Under the mod, check in to the hub so `/mempalace-sharedbrain:sessions` can list who is around. |
 | `presence.wing` / `presence.room` | `capabilities.wing` / `presence` | Where each identity's check-in drawer lives. |
 | `presence.interval_minutes` | `30` | How often a running session refreshes its check-in. A check-in older than three intervals shows as idle. |
+| `bridge.mode` | `read` | The message bridge (`docs/bridge.md`), under the mod. `read`: new mail starts a turn that only reads and reports. `act`: tasks addressed to this identity by name and signed by a machine this one trusts (`/mempalace-sharedbrain:trust`) are also carried out. `off`: no turns start and listening follows `listen arm`. Per machine: `/mempalace-sharedbrain:bridge mode act` changes it on this machine only. |
+| `bridge.sign_tasks` | `session` | Signing a task this machine sends, so another machine may carry it out. `session`: confirm the first task to each recipient, with an option to stop asking for that recipient for the session. `ask`: confirm every task. `auto`: never ask. A turn started or carried by hub mail never signs a task, whatever the value. `/mempalace-sharedbrain:bridge sign <value>` sets it. |
+| `bridge.key_source` | `auto` | Where the bridge key lives. `auto`: the 1Password SSH key named `bridge.agent_key_name`, or, until one has ever been found, a key file (with a warning in `/mempalace-sharedbrain:trust show`). Once the 1Password key has been used, a locked 1Password or a stopped agent means no signing, never a fallback to a file. `1password`: only 1Password. `file`: only a key file. |
+| `bridge.agent_key_name` | `MemPalace bridge {host}` | The title of this machine's SSH key item in 1Password; `{host}` becomes the host label. |
+| `bridge.max_turns_per_thread` | `4` | Automatic turns on one thread (a correlation id) before it pauses for the person. The last one summarises the thread and asks whether to continue. |
+| `bridge.max_turns_per_hour` | `12` | Automatic turns an hour across all threads. Past it, mail waits for the next prompt. |
 | `extra_context` | `[]` | Lines appended to the session-start block as written. For machine notes that must load every session and have no better home. |
 
 ## Four common setups
@@ -119,10 +128,13 @@ expires. Revoke a machine by deleting its client in the authorization server.
 | File | Holds |
 |---|---|
 | `cursors/<identity>.json` | The inbox cursor: id of the last event this identity processed. `setup.sh cursor get|set|clear`. |
-| `watch/<identity>.json` | Armed watch: types, optional correlation id and topic, and the watch cursor. `setup.sh listen arm|disarm|status`. |
+| `watch/<identity>.json` | Armed watch: types, optional correlation id and topic, and the watch cursor. `setup.sh listen arm|disarm|status`. The bridge creates it when there is none; `disarm` leaves a record so it is not armed again. |
 | `pending/<session>.md` | Pre-compaction snapshot awaiting filing. |
 | `oauth/<key>.json` | Cached client-credentials access token and its expiry. |
 | `rules/<file>.<timestamp>` | The instruction file as it was before each `rules install --write`. |
+| `bridge/seen_signatures.json` | What each verified signature covered and on which event, so a replayed task is refused. Kept for 15 days. |
+| `bridge/<identity>.threads.json` | Automatic turns per thread, paused threads and the last hour's turns. `setup.sh bridge status|continue`. |
+| `bridge/<identity>/<event>.lock` | Which session of this identity took an event, so two never act on the same one. Stale after six hours. |
 | `presence/<identity>.json` | This identity's check-in drawer id, so each check-in updates the same drawer. |
 | `capabilities.json` | The last full probe. Session start reuses it for six hours. |
 | `capabilities.published.json` | Hash and drawer id of the last publish, compared with each probe. |
