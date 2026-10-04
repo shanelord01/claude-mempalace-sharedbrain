@@ -25,7 +25,7 @@ REASON = (
     "Use mempalace_diary_write (session summary) and mempalace_add_drawer "
     "(quotes, decisions, code) to save session content. "
     "Do NOT use native auto-memory files. "
-    "mempalace_checkpoint does both in one call. Use %s as from_agent / added_by / agent_name. "
+    "mempalace_checkpoint does both in one call. Use %s as from_agent / added_by and %s as the diary agent_name. "
     "Then continue the conversation."
 )
 
@@ -75,7 +75,7 @@ def main():
         with C.open_private(last_file, "w") as fh:
             fh.write(str(count))
         C.log("STOP session %s: checkpoint at %d human turns (%d since last)" % (session_id, count, since))
-        C.emit({"decision": "block", "reason": REASON % ident})
+        C.emit({"decision": "block", "reason": REASON % (ident, C.diary_name(ident))})
         return
 
     C.emit({})

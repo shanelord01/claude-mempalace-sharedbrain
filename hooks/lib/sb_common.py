@@ -191,6 +191,11 @@ def identity(cfg, cwd=None):
     return "%s:%s:%s" % (host_label(cfg), harness, project)
 
 
+def diary_name(ident):
+    """A name mempalace_diary_write accepts: its sanitize_name rejects colons, so they become underscores."""
+    return ident.replace(":", "_")
+
+
 def identity_is_canonical(ident):
     parts = ident.split(":")
     return len(parts) == 3 and all(COMPONENT_RE.fullmatch(p) for p in parts)

@@ -24,10 +24,12 @@ TOOL_NOTE = (
 
 
 def identity_line(cfg, ident, cwd):
+    diary = C.diary_name(ident)
+    diary_note = "" if diary == ident else " Diary agent_name: %s (mempalace_diary_write rejects colons)." % diary
     if cfg["identity"].get("fixed"):
         note = "" if C.identity_is_canonical(ident) else " (a fixed id from this machine's config, outside the canonical host:harness:project form)"
-        return "Identity for this session: %s%s." % (ident, note)
-    return "Identity for this session: %s (host:harness:project, project taken from the workspace %s)." % (ident, cwd or os.getcwd())
+        return "Identity for this session: %s%s.%s" % (ident, note, diary_note)
+    return "Identity for this session: %s (host:harness:project, project taken from the workspace %s).%s" % (ident, cwd or os.getcwd(), diary_note)
 
 
 def rules_line(cfg):

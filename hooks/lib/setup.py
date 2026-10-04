@@ -58,8 +58,8 @@ def cmd_path(_cfg, _args):
 
 def cmd_identity(cfg, args):
     ident = C.identity(cfg, args.cwd)
-    print(ident)
-    return 0 if C.identity_is_canonical(ident) else 0
+    print(C.diary_name(ident) if args.diary else ident)
+    return 0
 
 
 def cmd_init(cfg, args):
@@ -308,6 +308,7 @@ def build_parser():
 
     p = sub.add_parser("identity")
     p.add_argument("--cwd")
+    p.add_argument("--diary", action="store_true", help="print the diary-safe form (colons become underscores)")
     p.set_defaults(func=cmd_identity)
 
     p = sub.add_parser("init")
