@@ -1,6 +1,7 @@
 // Run with: claude plugin test .
 // The test's `on` hooks sit beneath the mod and stand for the engine: they answer $.process.run (the
 // plugin's Python) and $.mcp.call (the hub) from memory.
+import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { itemLine, requiresOf, toItem, unmetRequirements } from '../hooks/register'
@@ -26,11 +27,12 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: Parameters<Parameters<typeof test>[1] & Function>[1], opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[] } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
   mock.env(on, {})
+  mock.clock(on)
   on('session.cwd', async () => ({ value: '/tmp/demo/sub' }))
   on('session.root', async () => ({ value: '/tmp/demo' }))
   for (const noop of ['ui.log', 'ui.status', 'ui.toast', 'ui.invalidate'] as const) on(noop, async () => ({ value: undefined }))
@@ -52,6 +54,7 @@ function world(on: Parameters<Parameters<typeof test>[1] & Function>[1], opts: {
   })
   on('mcp.call', async (_$: unknown, e: { server: string; tool: string; args: Record<string, unknown> }) => {
     mcp.push({ tool: e.tool, args: e.args })
+    if (opts.isUp && !opts.isUp()) return { value: { content: [{ type: 'text', text: 'no connected MCP tool' }], isError: true } }
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
     const a = e.args
     let events: unknown[] = []
@@ -114,9 +117,12 @@ describe('session start and the first prompt', () => {
   test('a configured server that does not answer falls back to the model sweep', async ($, on) => {
     const { mcp } = world(on, { ctx: context({ mcp_server: 'elsewhere' }) })
     await $.classic.SessionStart({ source: 'startup' } as never)
-    const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    const first = await $.classic.UserPromptSubmit({ prompt: 'one' } as never)
+    expect((first.additionalContext ?? []).join('\n')).toContain('tries again with the next prompt')
+    await $.classic.UserPromptSubmit({ prompt: 'two' } as never)
+    const result = await $.classic.UserPromptSubmit({ prompt: 'three' } as never)
     const text = (result.additionalContext ?? []).join('\n')
-    expect(text).toContain('the inbox check through MCP failed')
+    expect(text).toContain('the inbox check through MCP failed 3 times')
     expect(text).toContain(`since_event_id=evt_00`)
     expect(mcp.every(c => c.tool === 'mempalace_event_list')).toBe(true)
   })
@@ -124,8 +130,26 @@ describe('session start and the first prompt', () => {
   test('says so when the hub cannot be reached', async ($, on) => {
     world(on, { hubDown: true })
     await $.classic.SessionStart({ source: 'startup' } as never)
-    const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    for (const prompt of ['one', 'two']) {
+      const early = await $.classic.UserPromptSubmit({ prompt } as never)
+      expect((early.additionalContext ?? []).join('\n')).not.toContain('sweep it yourself now')
+    }
+    const result = await $.classic.UserPromptSubmit({ prompt: 'three' } as never)
     expect((result.additionalContext ?? []).join('\n')).toContain('sweep it yourself now')
+    const after = await $.classic.UserPromptSubmit({ prompt: 'four' } as never)
+    expect(after.additionalContext ?? []).toEqual([])
+  })
+
+  test('a connector that comes up on a later prompt is swept then', async ($, on) => {
+    let up = false
+    const { calls } = world(on, { isUp: () => up })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const first = await $.classic.UserPromptSubmit({ prompt: 'one' } as never)
+    expect((first.additionalContext ?? []).join('\n')).toContain('tries again with the next prompt')
+    up = true
+    const second = await $.classic.UserPromptSubmit({ prompt: 'two' } as never)
+    expect((second.additionalContext ?? []).join('\n')).toContain('checked by the mempalace-sharedbrain mod')
+    expect(calls).toContainEqual(['cursor', 'set', 'evt_01'])
   })
 })
 

@@ -22,6 +22,8 @@ export type HubStatus = {
   openTasks: InboxItem[]
   checkedAt: number
   error: string
+  /** The last check failed and the mod tries again with the next prompt. */
+  isRetrying?: boolean
 }
 
 declare module 'claude-code' {
