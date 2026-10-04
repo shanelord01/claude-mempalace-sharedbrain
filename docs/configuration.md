@@ -134,12 +134,12 @@ underscores, so two identities never share a file.
 | `cpu` | always | thread count |
 | `memory-gb` | always | total memory in GB |
 | `gpu` | `nvidia-smi` reports a GPU, or an Apple silicon Mac | NVIDIA driver version |
-| `xcode` / `xcode-beta` | an `Xcode*.app` release or beta bundle in `/Applications` | newest bundle's version |
+| `xcode` / `xcode-beta` | `xcode`: any `Xcode*.app` bundle in `/Applications`. `xcode-beta`: a bundle named beta | newest such bundle's version |
 | `ios-simulator` | `xcrun simctl` lists available devices | none |
 | `gh` | gh is logged in to github.com (read from its hosts file) | none |
 | `linode-cli` | installed or configured | none |
 | `unattended-commit` | `~/.ssh/claude_agent_signing_ed25519` and its `.pub` exist | none |
-| `tailscale` | joined to a tailnet (has a MagicDNS name) | none |
+| `tailscale` | joined to a tailnet (has a MagicDNS name). On macOS the app's bundled CLI is used | none |
 | `git`, `python`, `node`, `uv`, `docker`, `podman`, `distrobox` | on `PATH` | tool version |
 
 Requirements use these names, alone or with `>=`, `>`, `=`, `<=` or `<` and a dotted version:

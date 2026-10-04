@@ -312,6 +312,19 @@ expect_contains "requires parsed from metadata string" "$OUT" "['a', 'b>=2']"
 expect_contains "requires parsed from a body line" "$OUT" "['c', 'd']"
 expect_contains "version comparisons" "$OUT" "(['xcode>=27', 'xcode=27'], ['xcode>27.1 (have 27.1)', 'xcode<27 (have 27.1)', 'bad req!! (unreadable requirement)'])"
 
+XA="$TMP/Applications"; mkdir -p "$XA/Xcode-beta.app/Contents" "$XA/Xcode_26.app/Contents"
+"$PY" -c "
+import plistlib
+plistlib.dump({'CFBundleShortVersionString': '27.1', 'ProductBuildVersion': '27A9269'}, open('$XA/Xcode-beta.app/Contents/version.plist', 'wb'))
+plistlib.dump({'CFBundleShortVersionString': '26.4', 'ProductBuildVersion': '26E240d'}, open('$XA/Xcode_26.app/Contents/version.plist', 'wb'))"
+OUT="$("$PY" -c "
+import sys, platform; sys.path.insert(0, '$ROOT/hooks/lib'); import capabilities as K
+K.APPLICATIONS = '$XA'; platform.system = lambda: 'Darwin'
+x, b = K.probe_xcode()
+print(x['present'], x.get('version'), b['present'], b.get('version'), [a['app'] for a in b['detail']['apps']])")"
+expect_contains "beta-named bundle still counts as xcode" "$OUT" "True 27.1 True 27.1"
+expect_contains "letter-suffixed release build is not a beta" "$OUT" "['Xcode-beta.app']"
+
 echo "# permissions"
 expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"
 expect_eq "config private" "$(stat -c %a "$TMP/config.json")" "600"

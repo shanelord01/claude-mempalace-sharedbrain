@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import sb_common as C  # noqa: E402
 
 CMD_TIMEOUT = 4.0
+APPLICATIONS = "/Applications"
 CACHE_FILE = os.path.join(C.STATE_DIR, "capabilities.json")
 PUBLISHED_FILE = os.path.join(C.STATE_DIR, "capabilities.published.json")
 CACHE_TTL = 6 * 3600
@@ -147,7 +148,7 @@ def probe_xcode():
     if platform.system() != "Darwin":
         return cap(False, summary="not macOS"), cap(False, summary="not macOS")
     releases, betas = [], []
-    for app in sorted(glob.glob("/Applications/Xcode*.app")):
+    for app in sorted(glob.glob(os.path.join(APPLICATIONS, "Xcode*.app"))):
         try:
             with open(os.path.join(app, "Contents", "version.plist"), "rb") as fh:
                 info = plistlib.load(fh)
@@ -156,19 +157,25 @@ def probe_xcode():
         except Exception:
             continue
         entry = {"app": os.path.basename(app), "version": ver, "build": build}
-        # Apple's beta builds end in a letter-digit sequence with a trailing letter; the app
-        # is also usually named Xcode-beta.app. Either marks a beta.
-        is_beta = "beta" in os.path.basename(app).lower() or bool(re.search(r"\d+[a-z]$", build.lower()))
+        # Beta by bundle name (Xcode-beta.app). Build letters say nothing: releases such as
+        # 15A240d end in a letter too.
+        is_beta = "beta" in os.path.basename(app).lower()
         (betas if is_beta else releases).append(entry)
     _, selected = run(["xcodebuild", "-version"])
     selected_version = version_of(selected.splitlines()[0]) if selected else None
 
     def summarise(items):
         return "; ".join("%s (%s)" % (i["version"], i["build"]) for i in items)
-    release_cap = cap(bool(releases), (releases[-1]["version"] if releases else None),
-                      summarise(releases) + ((", selected %s" % selected_version) if selected_version else ""),
-                      apps=releases, selected=selected_version)
-    beta_cap = cap(bool(betas), (betas[-1]["version"] if betas else None), summarise(betas), apps=betas)
+
+    def newest(items):
+        return max(items, key=lambda i: version_tuple(i["version"]))["version"] if items else None
+    # `xcode` is any Xcode bundle that can build: a beta-named bundle often carries the same build
+    # as the release, so it counts too. `xcode-beta` lists the bundles flagged as betas.
+    every = releases + betas
+    release_cap = cap(bool(every), newest(every),
+                      summarise(every) + ((", selected %s" % selected_version) if selected_version else ""),
+                      apps=every, selected=selected_version)
+    beta_cap = cap(bool(betas), newest(betas), summarise(betas), apps=betas)
     return release_cap, beta_cap
 
 
@@ -236,9 +243,14 @@ def probe_unattended_commit():
 
 def probe_tailscale():
     """Present when this machine is joined to a tailnet. Up or down right now is volatile and kept out of the summary."""
-    if not shutil.which("tailscale"):
+    binary = shutil.which("tailscale")
+    if not binary:
+        # The macOS app ships its CLI inside the bundle and does not put it on PATH.
+        app_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        binary = app_cli if os.path.isfile(app_cli) else None
+    if not binary:
         return cap(False, summary="not installed")
-    code, out = run(["tailscale", "status", "--self", "--json"], timeout=6)
+    code, out = run([binary, "status", "--self", "--json"], timeout=6)
     try:
         data = json.loads(out) if out else {}
     except ValueError:
