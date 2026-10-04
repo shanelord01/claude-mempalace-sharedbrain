@@ -29,6 +29,7 @@ directory is created readable by the current user only.
   "probe": {"enabled": true, "inbox_limit": 10},
   "wake": {"types": ["task.request", "task.reply", "patch.ready"], "limit": 50},
   "checkpoint": {"save_interval": 15},
+  "capabilities": {"enabled": true, "profile_drawer_id": "", "wing": "fleet", "room": "machines", "custom": {}},
   "extra_context": []
 }
 ```
@@ -61,6 +62,10 @@ directory is created readable by the current user only.
 | `wake.types` | `task.request`, `task.reply`, `patch.ready` | Default event types a `listen arm` watches for. The protocol's recommended set. |
 | `wake.limit` | `50` | Events examined per wake check. |
 | `checkpoint.save_interval` | `15` | Human turns between checkpoint requests. `0` disables the Stop hook's request. |
+| `capabilities.enabled` | `true` | Show this machine's capabilities at session start and nudge when the published profile is out of date. |
+| `capabilities.profile_drawer_id` | empty | This host's profile drawer on the hub. Set by `setup.sh capabilities published`, so later publishes update it in place. |
+| `capabilities.wing` / `capabilities.room` | `fleet` / `machines` | Where a new profile drawer is filed. |
+| `capabilities.custom` | `{}` | Extra capabilities: a map of name to a command (no shell) that exits 0 when the capability is present. Its output is discarded and never published, so a secret-store lookup is safe to use as a check. |
 | `extra_context` | `[]` | Lines appended to the session-start block as written. For machine notes that must load every session and have no better home. |
 
 ## Four common setups
@@ -114,10 +119,31 @@ expires. Revoke a machine by deleting its client in the authorization server.
 | `pending/<session>.md` | Pre-compaction snapshot awaiting filing. |
 | `oauth/<key>.json` | Cached client-credentials access token and its expiry. |
 | `rules/<file>.<timestamp>` | The instruction file as it was before each `rules install --write`. |
+| `capabilities.json` | The last full probe. Session start reuses it for six hours. |
+| `capabilities.published.json` | Hash and drawer id of the last publish, compared with each probe. |
 | `hook.log` | One line per hook run. Rotates at 1 MB. |
 
 Identity file names follow the MemPalace CLI: underscores doubled, then colons turned into
 underscores, so two identities never share a file.
+
+## Capability vocabulary
+
+| Name | Present when | Version for `>=` comparisons |
+|---|---|---|
+| `os` | always | OS release |
+| `cpu` | always | thread count |
+| `memory-gb` | always | total memory in GB |
+| `gpu` | `nvidia-smi` reports a GPU, or an Apple silicon Mac | NVIDIA driver version |
+| `xcode` / `xcode-beta` | an `Xcode*.app` release or beta bundle in `/Applications` | newest bundle's version |
+| `ios-simulator` | `xcrun simctl` lists available devices | none |
+| `gh` | gh is logged in to github.com (read from its hosts file) | none |
+| `linode-cli` | installed or configured | none |
+| `unattended-commit` | `~/.ssh/claude_agent_signing_ed25519` and its `.pub` exist | none |
+| `tailscale` | joined to a tailnet (has a MagicDNS name) | none |
+| `git`, `python`, `node`, `uv`, `docker`, `podman`, `distrobox` | on `PATH` | tool version |
+
+Requirements use these names, alone or with `>=`, `>`, `=`, `<=` or `<` and a dotted version:
+`xcode>=27.1`, `memory-gb>=32`, `gpu`. `=` matches on the parts given, so `xcode=27` matches 27.1.
 
 ## Checking it
 

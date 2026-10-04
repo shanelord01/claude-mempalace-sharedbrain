@@ -19,7 +19,7 @@ DRAWERS = 1234
 EVENTS = [
     {"id": "evt_01_task_unacked", "type": "task.request", "from_agent": "other-agent", "to_agent": AGENT,
      "correlation_id": "task_unacked_1", "status": "open", "created_at": "2026-10-01T00:00:00Z",
-     "body": "Please do the unacked thing"},
+     "body": "Please do the unacked thing", "metadata": {"requires": ["xcode>=99"]}},
     {"id": "evt_02_task_acked", "type": "task.request", "from_agent": "other-agent", "to_agent": AGENT,
      "correlation_id": "task_acked_2", "status": "open", "created_at": "2026-10-02T00:00:00Z",
      "body": "Already claimed thing"},
@@ -28,7 +28,7 @@ EVENTS = [
      "body": "claimed", "metadata": {"ack_of": "evt_02_task_acked"}},
     {"id": "evt_04_broadcast", "type": "task.request", "from_agent": "other-agent", "to_agent": "*",
      "correlation_id": "task_broadcast_3", "status": "open", "created_at": "2026-10-03T00:00:00Z",
-     "body": "Broadcast thing"},
+     "body": "Requires: python\nBroadcast thing"},
     {"id": "evt_05_not_mine", "type": "task.request", "from_agent": "other-agent", "to_agent": "someone-else",
      "correlation_id": "task_other_4", "status": "open", "created_at": "2026-10-03T00:00:00Z",
      "body": "Not for office-desktop"},

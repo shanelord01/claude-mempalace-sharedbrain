@@ -18,6 +18,11 @@
     setup.py peers                      mempalace_mesh_peers and /statusz
     setup.py rules render|check|install [--write] [--host ..] [--project ..] [--mcp ..] [--target ..]
     setup.py vendor-check [--update]    compare the vendored rules template with upstream
+    setup.py capabilities probe [--json]   what this machine can do, in the plugin's vocabulary
+    setup.py capabilities status        probe compared with what was last published to the hub
+    setup.py capabilities plan          the facts and profile drawer to publish (the model makes the MCP calls)
+    setup.py capabilities published HASH DRAWER_ID   record a completed publish
+    setup.py capabilities check REQ...  does this machine meet requirements like xcode>=27 memory-gb>=32
 
 init keeps any existing settings and changes only the flags you pass.
 """
@@ -297,6 +302,58 @@ def cmd_vendor_check(_cfg, args):
     return 0
 
 
+def cmd_capabilities(cfg, args):
+    import capabilities as K
+    if args.action == "published":
+        if not args.items or len(args.items) != 2:
+            print("usage: capabilities published HASH DRAWER_ID", file=sys.stderr)
+            return 2
+        hash_value, drawer_id = args.items
+        K.save_published(hash_value, drawer_id)
+        cfg.setdefault("capabilities", {})["profile_drawer_id"] = drawer_id
+        C.save_config(cfg)
+        print("recorded publish %s, profile drawer %s" % (hash_value, drawer_id))
+        return 0
+    result = K.probe(cfg)
+    K.save_cached(result)
+    if args.action == "probe":
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print("host %s, probe hash %s" % (result["host"], result["hash"]))
+            for name, c in sorted(result["capabilities"].items()):
+                print("  %-18s %s" % (name, (c.get("summary") or "yes") if c["present"] else "no"))
+        return 0
+    if args.action == "check":
+        met, unmet = K.check_requirements(result, args.items or [])
+        print(json.dumps({"host": result["host"], "met": met, "unmet": unmet}, indent=2))
+        return 0 if not unmet else 3
+    published = K.load_published()
+    caps_cfg = cfg.get("capabilities") or {}
+    drawer_id = caps_cfg.get("profile_drawer_id") or published.get("drawer_id") or ""
+    state = "current" if published.get("hash") == result["hash"] else ("changed" if published.get("hash") else "never-published")
+    if args.action == "status":
+        print(json.dumps({"host": result["host"], "state": state, "probe_hash": result["hash"],
+                          "published_hash": published.get("hash"), "published_at": published.get("published_at"),
+                          "profile_drawer_id": drawer_id}, indent=2))
+        return 0 if state == "current" else 3
+    # plan
+    ident = C.identity(cfg)
+    print(json.dumps({
+        "host": result["host"],
+        "identity": ident,
+        "state": state,
+        "probe_hash": result["hash"],
+        "published_hash": published.get("hash"),
+        "profile_drawer_id": drawer_id,
+        "wing": caps_cfg.get("wing") or "fleet",
+        "room": caps_cfg.get("room") or "machines",
+        "facts": K.facts(result),
+        "profile": K.profile_text(result, ident),
+    }, indent=2))
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="setup", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -359,6 +416,12 @@ def build_parser():
     p.add_argument("--target")
     p.add_argument("--write", action="store_true")
     p.set_defaults(func=cmd_rules)
+
+    p = sub.add_parser("capabilities")
+    p.add_argument("action", choices=["probe", "status", "plan", "published", "check"])
+    p.add_argument("items", nargs="*")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_capabilities)
 
     p = sub.add_parser("vendor-check")
     p.add_argument("--update", action="store_true")

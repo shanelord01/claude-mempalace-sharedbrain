@@ -165,6 +165,8 @@ OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
 expect_contains "probe reaches the hub via healthz and mcp" "$OUT" "hub reachable, MemPalace 9.9.9-fake, 1234 drawers"
 expect_contains "probe counts open vs unacked" "$OUT" "3, of which 2 have no ack"
 expect_contains "unacked listed" "$OUT" "  - evt_01_task_unacked"
+expect_contains "unmeetable requirement flagged" "$OUT" "THIS MACHINE CANNOT MEET: xcode>=99"
+expect_contains "Requires line read from the body" "$OUT" "requires python; this machine meets it"
 expect_missing "acked task not listed" "$OUT" "  - evt_02_task_acked"
 expect_missing "other agent's task not listed" "$OUT" "evt_05_not_mine"
 "$SETUP" cursor set evt_04_broadcast >/dev/null
@@ -267,6 +269,48 @@ expect_contains "stdio start failure reported" "$("$SETUP" probe 2>&1)" "cannot 
 OUT="$("$SETUP" listen arm)"
 expect_contains "arm with no transport says the model will sweep" "$OUT" "no transport to the hub"
 "$SETUP" listen disarm >/dev/null
+
+echo "# capabilities"
+OUT="$("$SETUP" capabilities probe)"
+expect_contains "probe names the host" "$OUT" "host office-desktop, probe hash"
+expect_contains "probe lists python" "$OUT" "python"
+"$SETUP" capabilities check python "memory-gb>=1" >/dev/null; expect_eq "check met exits 0" "$?" "0"
+OUT="$("$SETUP" capabilities check python "memory-gb>=99999" "no-such-tool")"; RC=$?
+expect_eq "check unmet exits 3" "$RC" "3"
+expect_contains "check names a version shortfall" "$OUT" "memory-gb>=99999 (have"
+expect_contains "check names a missing tool" "$OUT" '"no-such-tool"'
+"$SETUP" capabilities status >/dev/null; expect_eq "status before publish exits 3" "$?" "3"
+expect_contains "status says never published" "$("$SETUP" capabilities status)" '"state": "never-published"'
+OUT="$(echo '{"session_id":"t7","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_contains "session start nudges an unpublished machine" "$OUT" "have never been published to the hub"
+PLAN="$("$SETUP" capabilities plan)"
+expect_contains "plan carries kg facts" "$PLAN" '"predicate": "has_capability"'
+expect_contains "plan carries the profile text" "$PLAN" "Search terms: office-desktop capabilities"
+expect_eq "fact objects fit the kg limit" "$(echo "$PLAN" | "$PY" -c 'import json,sys; print(max(len(f["object"]) for f in json.load(sys.stdin)["facts"]) <= 128)')" "True"
+HASH="$(echo "$PLAN" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["probe_hash"])')"
+"$SETUP" capabilities published "$HASH" drawer_fleet_machines_abc >/dev/null
+"$SETUP" capabilities status >/dev/null; expect_eq "status after publish exits 0" "$?" "0"
+expect_contains "config keeps the profile drawer id" "$("$SETUP" show)" "drawer_fleet_machines_abc"
+OUT="$(echo '{"session_id":"t7","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_contains "session start reports a current profile" "$OUT" "(published, profile drawer drawer_fleet_machines_abc)"
+"$SETUP" set capabilities.custom '{"always-there": "true", "never-there": "false", "noisy": "echo SECRETVALUE"}' >/dev/null
+OUT="$("$SETUP" capabilities probe)"
+expect_missing "custom check output never published" "$("$SETUP" capabilities plan)" "SECRETVALUE"
+expect_contains "custom check present" "$OUT" "always-there       yes (custom check)"
+expect_contains "custom check absent" "$OUT" "never-there        no"
+expect_contains "status sees the custom change" "$("$SETUP" capabilities status)" '"state": "changed"'
+"$SETUP" set capabilities.enabled false >/dev/null
+OUT="$(echo '{"session_id":"t7","source":"startup","cwd":"/tmp/demo"}' | "$SS" | context_of)"
+expect_missing "capabilities line can be turned off" "$OUT" "Capabilities of host"
+"$SETUP" set capabilities.enabled true >/dev/null
+OUT="$("$PY" -c "
+import sys; sys.path.insert(0, '$ROOT/hooks/lib'); import capabilities as K
+print(K.requires_of({'metadata': {'requires': 'a, b>=2'}}), K.requires_of({'body': 'x\\nRequires: c d'}), K.requires_of({}))
+r = {'capabilities': {'xcode': {'present': True, 'version': '27.1'}}}
+print(K.check_requirements(r, ['xcode>=27', 'xcode>27.1', 'xcode=27', 'xcode<27', 'bad req!!']))")"
+expect_contains "requires parsed from metadata string" "$OUT" "['a', 'b>=2']"
+expect_contains "requires parsed from a body line" "$OUT" "['c', 'd']"
+expect_contains "version comparisons" "$OUT" "(['xcode>=27', 'xcode=27'], ['xcode>27.1 (have 27.1)', 'xcode<27 (have 27.1)', 'bad req!! (unreadable requirement)'])"
 
 echo "# permissions"
 expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"

@@ -78,6 +78,13 @@ DEFAULTS = {
     "checkpoint": {
         "save_interval": 15,
     },
+    "capabilities": {
+        "enabled": True,
+        "profile_drawer_id": "",
+        "wing": "fleet",
+        "room": "machines",
+        "custom": {},
+    },
     "extra_context": [],
 }
 

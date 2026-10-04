@@ -407,7 +407,37 @@ def summarise_event(event):
         "correlation_id": C.clean_line(event.get("correlation_id"), 120),
         "topic": C.clean_line(event.get("topic"), 60),
         "body": C.clean_line(event.get("body"), 160),
+        "requires": [C.clean_line(r, 40) for r in _requires(event)][:12],
     }
+
+
+def _requires(event):
+    try:
+        import capabilities as K
+        return K.requires_of(event)
+    except Exception:
+        return []
+
+
+_FIT_CACHE = {}
+
+
+def fit_note(item):
+    """' requires X; this machine meets it' / '... cannot meet: Y', or '' when the event names no requirements."""
+    requires = item.get("requires") or []
+    if not requires:
+        return ""
+    try:
+        import capabilities as K
+        if "probe" not in _FIT_CACHE:
+            _FIT_CACHE["probe"] = K.current(C.load_config(), quick=True)
+        _met, unmet = K.check_requirements(_FIT_CACHE["probe"], requires)
+    except Exception as exc:
+        return "  requires %s (could not check this machine: %s)" % (", ".join(requires), C.clean_line(exc, 60))
+    if unmet:
+        return "  requires %s; THIS MACHINE CANNOT MEET: %s (leave it for a machine that can, or tell the user)" % (
+            ", ".join(requires), ", ".join(unmet))
+    return "  requires %s; this machine meets it" % ", ".join(requires)
 
 
 def list_events(client, **filters):
@@ -543,9 +573,9 @@ def peers(cfg):
 
 
 def format_event_line(item):
-    return "  - %s  %s%s  from %s  to %s  %s  excerpt: \"%s\"" % (
+    return "  - %s  %s%s  from %s  to %s  %s  excerpt: \"%s\"%s" % (
         item["id"], item["type"], (" " + item["status"]) if item["status"] else "",
-        item["from"], item["to"], item["created"], item["body"])
+        item["from"], item["to"], item["created"], item["body"], fit_note(item))
 
 
 def format_probe(result, ident):

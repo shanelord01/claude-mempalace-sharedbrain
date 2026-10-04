@@ -45,6 +45,16 @@ the local package, which a hub client does not have. Here the Stop hook asks the
 MemPalace's own words, to save through the MCP tools every 15 human turns, and the PreCompact hook
 snapshots the conversation to a private file without blocking, handed back after compaction.
 
+**Routes work to machines that can do it.** Each machine probes what it can do: OS, CPU threads,
+memory, GPU, Xcode release and beta versions, iOS simulators, git, gh, linode-cli, Docker, Podman,
+distrobox, Tailscale, Node, Python, an agent signing key, plus any checks you add. The probe reads
+local facts only, no secret values. `/mempalace-sharedbrain:capabilities` publishes the result to the
+hub as knowledge-graph facts on the host label (`has_capability`, `lacks`) and one profile drawer
+per host. Session start shows the machine's capabilities and nudges when the hub's copy is out of
+date. A task names its requirements in `metadata.requires` or a `Requires:` line, such as
+`xcode>=27, memory-gb>=32`. Delegation finds a host that meets them, and the inbox, the session-start
+sweep and the wake check flag any task this machine cannot meet before anyone claims it.
+
 **Commands.**
 
 | Command | Does |
@@ -53,8 +63,9 @@ snapshots the conversation to a private file without blocking, handed back after
 | `/mempalace-sharedbrain:rules` | Render, check or install the canonical rules block, diff first. |
 | `/mempalace-sharedbrain:inbox` | Sweep from the cursor, report verbatim, claim only on a go-ahead, record the cursor. |
 | `/mempalace-sharedbrain:listen` | Arm or disarm the wake check and post the announcement. |
-| `/mempalace-sharedbrain:delegate` | `mempalace_task_create` with a preview, then arm, wait, verify, ack, file the outcome. |
+| `/mempalace-sharedbrain:delegate` | `mempalace_task_create` with a preview, optional `--requires` to pick a capable host, then arm, wait, verify, ack, file the outcome. |
 | `/mempalace-sharedbrain:checkpoint` | `mempalace_checkpoint`: drawers and a diary entry in one call. |
+| `/mempalace-sharedbrain:capabilities` | Probe this machine, publish its profile, check requirements, find hosts that meet them. |
 | `/mempalace-sharedbrain:peers` | `mempalace_mesh_peers` and `/statusz`: hub, recent clients, mesh peers. |
 
 ## Requirements
