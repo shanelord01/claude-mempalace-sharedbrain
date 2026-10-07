@@ -485,7 +485,11 @@ def closed_tasks(events, tasks=(), ident=""):
     return ids, correlations
 
 
-def own_events(client, ident, limit=100):
+# Threads read per probe to find closures; requests past this count as open until a later probe.
+THREAD_CAP = 6
+
+
+def own_events(client, ident, limit=20):
     """Events written by this identity; uses `writer` when the hub's schema has it."""
     accepts_writer = client.tool_accepts("mempalace_event_list", "writer")
     if accepts_writer:
@@ -524,11 +528,17 @@ def run_probe(cfg, ident, cursor=""):
             result["new_since_cursor"] = [summarise_event(e) for e in list_events(
                 client, to_agent=ident, since_event_id=cursor, limit=limit)]
         tasks = list_events(client, to_agent=ident, type="task.request", status="open", limit=limit)
-        mine = own_events(client, ident)
+        # Closures come from each request's own thread (an ack copies the request's correlation id, or
+        # its id when it has none), read from the request on. A hub-wide list of acks and replies grows
+        # with everyone's traffic and can be larger than a client accepts.
+        thread_events = []
+        for task in tasks[:THREAD_CAP]:
+            thread_events += list_events(client, correlation_id=task.get("correlation_id") or task.get("id"),
+                                         since_event_id=task.get("id"), limit=20)
+        mine = own_events(client, ident) + [e for e in thread_events if (e.get("writer") or e.get("from_agent")) == ident]
         my_correlations = {e.get("correlation_id") for e in mine if e.get("correlation_id")}
         my_ack_targets = {(e.get("metadata") or {}).get("ack_of") for e in mine if (e.get("metadata") or {}).get("ack_of")}
-        closures = list_events(client, type="event.ack", limit=100) + list_events(client, type="task.reply", limit=100)
-        closed_ids, closed_correlations = closed_tasks(closures, tasks, ident)
+        closed_ids, closed_correlations = closed_tasks(thread_events, tasks, ident)
         for task in tasks:
             item = summarise_event(task)
             if task.get("id") in closed_ids or (task.get("correlation_id") and task.get("correlation_id") in closed_correlations):

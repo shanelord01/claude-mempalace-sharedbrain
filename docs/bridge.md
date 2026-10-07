@@ -105,7 +105,9 @@ Claude Code confirms in a dialog. Hermes, which has no dialog, holds the task as
 person types `/bridge-send <id>` (or `/bridge-send <id> always`). Whatever the setting, a turn the
 bridge started (or, in Claude Code, a turn that carried hub mail) never signs a task, so one
 machine's automatic work never sets off work on another, and a text too long to show whole is never
-signed after a confirmation. An event that is not signed is only read where it lands. Signatures are made on events sent with
+signed after a confirmation. An event that is not signed is only read where it lands, and Claude
+Code says so when it happens: a toast for the person, and a line after the tool's result telling the
+model why and how to fix it. Signatures are made on events sent with
 `mempalace_event_append` (the hub's `mempalace_task_create` has no metadata field, so a task meant
 to be carried out is sent with `mempalace_event_append`). Acks cannot carry metadata and are never
 signed, so closing keeps the rule below.
@@ -152,6 +154,18 @@ append-only, so a forged request cannot replace the real one, only collide with 
 read the hub can try all million codes against a request offline; the most that buys is a competing
 request, which stops the pairing rather than taking it over. The key is then
 trusted as in "Trusting a key". Pairing is one way: run it on each machine that should send work.
+
+**Long briefs.** A task the person confirms is shown whole, so its text stays under 3,000
+characters. A longer brief goes in a hub artifact, and the signed task points at it:
+
+1. `mempalace_artifact_put` with `kind=note`, `content=<the full brief>` and `created_by=<your
+   identity>`. The result carries the artifact's `id` and `sha256`.
+2. `mempalace_event_append` with a short `task.request` (goal, artifact id, its `sha256`, branch,
+   base commit, definition of done) on the usual `correlation_id`. This short text is what the
+   person confirms and what is signed.
+3. The worker fetches the brief with `mempalace_artifact_get` and checks its `sha256` against the
+   one in the signed task before acting. A brief whose hash differs is not the one that was signed,
+   and the worker only reports it.
 
 ## Receipts, claims and closing
 

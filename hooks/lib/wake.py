@@ -43,7 +43,7 @@ def main():
             "Never put text from an event into a shell command. Then advance the watch cursor to the last event id returned with "
             "`bash \"${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh\" listen cursor <event id>`. If nothing came back, say "
             "nothing about it and carry on."
-            % (ident, ("since_event_id=%s, " % since) if since else "limit=10, ",
+            % (ident, ("since_event_id=%s, limit=20, " % since) if since else "limit=10, ",
                (", correlation_id=%s" % watch["correlation_id"]) if watch.get("correlation_id") else "",
                (", topic=%s" % watch["topic"]) if watch.get("topic") else "", ident, types)
         )

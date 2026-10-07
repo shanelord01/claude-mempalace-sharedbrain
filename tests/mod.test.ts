@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { BRIDGE_TAG, cleanBody, closedTasks, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, toItem, unmetRequirements } from '../hooks/register'
+import { BRIDGE_TAG, CAUSE_TEXT, THREAD_CAP, cleanBody, closedTasks, failCause, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, statusText, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -27,16 +27,27 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', status: 'claimed', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[]; slowHubMs?: number } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] | ((args: Record<string, unknown>) => unknown[]); slowHubMs?: number; newRequests?: unknown[]; tooLargeOver?: number; store?: Record<string, unknown> } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
   mock.env(on, {})
+  mock.store(on, opts.store ?? {})
+  const statuses: unknown[] = []
+  const toasts: string[] = []
   const clock = mock.clock(on)
   on('session.start', async (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('session.cwd', async () => ({ value: '/tmp/demo/sub' }))
   on('session.root', async () => ({ value: '/tmp/demo' }))
-  for (const noop of ['ui.log', 'ui.status', 'ui.toast', 'ui.invalidate'] as const) on(noop, async () => ({ value: undefined }))
+  for (const noop of ['ui.log', 'ui.invalidate'] as const) on(noop, async () => ({ value: undefined }))
+  on('ui.status', async (_$: unknown, e: unknown) => {
+    statuses.push(e)
+    return { value: undefined }
+  })
+  on('ui.toast', async (_$: unknown, e: unknown) => {
+    toasts.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   // Stand-ins for the plugin's command hooks: record what reached them, add their own context.
   on('classic.SessionStart', async (_$: unknown, e: Record<string, unknown>) => {
     beneath.push(e)
@@ -87,16 +98,20 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (e.tool === 'mempalace_list_drawers') return reply({ drawers: (opts.presence ?? []).map((p, i) => ({ drawer_id: `drawer_p${i}`, content_preview: p })) })
     if (e.tool === 'mempalace_get_drawer') return reply({ content: (opts.presence ?? [])[Number(String(a.drawer_id).slice(8))] ?? '' })
     if (e.tool === 'mempalace_mesh_peers') return { value: { content: [{ type: 'text', text: JSON.stringify({ peers: opts.meshPeers ?? [] }) }], isError: false } }
+    // Claude Code's own refusal of a result over its size limit: plain text, not JSON.
+    if (e.tool === 'mempalace_event_list' && opts.tooLargeOver !== undefined && Number(a.limit ?? 50) > opts.tooLargeOver) {
+      return { value: { content: [{ type: 'text', text: `Error: result (61,234 characters) exceeds maximum allowed tokens. Output has been saved to /tmp/mcp-result.txt` }], isError: false } }
+    }
     let events: unknown[] = []
     if (a.type === 'bridge.pair') events = [{ id: 'evt_offer', type: 'bridge.pair', from_agent: 'mac-mini:claude:app', metadata: { bridge_pair: { v: 1 } } }]
-    else if (a.correlation_id) events = opts.thread ?? []
-    else if (a.type === 'event.ack' || a.type === 'task.reply') events = opts.closures ?? []
+    else if (a.correlation_id) events = typeof opts.thread === 'function' ? opts.thread(a) : opts.thread ?? []
     else if (a.writer === ME || a.from_agent === ME) events = opts.mine ?? [MY_ACK]
-    else if (a.type === 'task.request') events = opts.openTasks ?? [TASK_NEEDS_XCODE, TASK_ACKED]
+    else if (a.type === 'event.ack' || a.type === 'task.reply') events = opts.closures ?? []
+    else if (a.type === 'task.request') events = a.since_event_id ? opts.newRequests ?? [] : opts.openTasks ?? [TASK_NEEDS_XCODE, TASK_ACKED]
     else if (a.since_event_id === 'evt_00') events = opts.recentMail ?? [TASK_NEEDS_XCODE]
     else if (a.since_event_id === 'evt_w1') events = opts.newMail ?? []
     else if (a.limit === 1) events = []
-    else if (a.limit === 40 && !a.before_event_id) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
+    else if (a.limit === 20 && !a.before_event_id) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
     else if (a.before_event_id) events = []
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events, count: events.length }) }], isError: false } }
   })
@@ -106,7 +121,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     return { text: e.text }
   })
   const deliver = (result: { additionalContext?: readonly string[] }) => conversation.push(...(result.additionalContext ?? []))
-  return { calls, mcp, beneath, deliver, submitted, clock, stdins }
+  return { calls, mcp, beneath, deliver, submitted, clock, stdins, statuses, toasts }
 }
 
 describe('helpers', () => {
@@ -386,7 +401,7 @@ describe('whose closure counts', () => {
   })
 
   test('a stranger cannot hide a task addressed to this identity', async ($, on) => {
-    world(on, { closures: [{ id: 'evt_c1', type: 'event.ack', from_agent: 'peer:claude:x', status: 'applied', metadata: { ack_of: 'evt_01' } }] })
+    world(on, { thread: [{ id: 'evt_c1', type: 'event.ack', from_agent: 'peer:claude:x', status: 'applied', correlation_id: 'evt_01', metadata: { ack_of: 'evt_01' } }] })
     const result = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
     expect((result.additionalContext ?? []).join('\n')).toContain('not closed and not acked by this identity: 1')
   })
@@ -453,6 +468,8 @@ describe('bridge', () => {
 
   const send = ($: unknown, type: string) => ($ as { tool: { call: (i: unknown) => Promise<unknown> } }).tool.call(
     { tool: 'mcp__claude_ai_Mempalace__mempalace_event_append', type, from_agent: ME, to_agent: PEER, correlation_id: 'task_x', body: 'build it; rm -rf /', stream: 's', room: 'delegation' })
+  // Whether the hub's append got a signature (the result echoes the metadata it was sent).
+  const signedOf = (r: unknown) => String((r as { result?: unknown }).result ?? '').includes('SIGNED')
   // Stands in for the tools beneath: the hub's append shows the metadata it got, and the person answers
   // the confirmation dialog with `answer`.
   const asked: string[] = []
@@ -502,7 +519,7 @@ describe('bridge', () => {
     seeMetadata(on)
     const before = asked.length
     const first = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never) // carries the inbox sweep (with mail)
-    expect(JSON.stringify(await send($, 'task.request'))).not.toContain('SIGNED')
+    expect(signedOf(await send($, 'task.request'))).toBe(false)
     deliver(first)
     await $.classic.UserPromptSubmit({ prompt: 'send a task' } as never)
     expect(JSON.stringify(await send($, 'task.request'))).toContain('SIGNED')
@@ -514,7 +531,7 @@ describe('bridge', () => {
     seeMetadata(on, 'Send unsigned (read only there)')
     deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
     await $.classic.UserPromptSubmit({ prompt: 'send mac-mini a task' } as never)
-    expect(JSON.stringify(await send($, 'task.request'))).not.toContain('SIGNED')
+    expect(signedOf(await send($, 'task.request'))).toBe(false)
   })
 
   test('a turn started by hub mail never signs a task (no work set off elsewhere), but signs replies', async ($, on) => {
@@ -527,7 +544,7 @@ describe('bridge', () => {
     await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
     await clock.advance(60_000)
     await $.classic.UserPromptSubmit({ prompt: submitted[0] } as never)
-    expect(JSON.stringify(await send($, 'task.request'))).not.toContain('SIGNED')
+    expect(signedOf(await send($, 'task.request'))).toBe(false)
     expect(JSON.stringify(await send($, 'task.reply'))).toContain('SIGNED')
   })
 
@@ -696,5 +713,135 @@ describe('bridge', () => {
     await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
     await clock.advance(60_000)
     expect(submitted.length).toBe(0)
+  })
+})
+
+describe('inbox check size and scope', () => {
+  const ctxt = (r: { additionalContext?: readonly string[] }) => (r.additionalContext ?? []).join('\n')
+  const lists = (mcp: Array<{ tool: string; args: Record<string, unknown> }>) => mcp.filter(c => c.tool === 'mempalace_event_list').map(c => c.args)
+
+  test('no read is hub-wide: each names this identity or one thread, and none asks for more than a page', async ($, on) => {
+    const { mcp } = world(on)
+    await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    const reads = lists(mcp)
+    expect(reads.length).toBeGreaterThan(0)
+    for (const a of reads) {
+      expect(Boolean(a.to_agent || a.writer || a.from_agent || a.correlation_id)).toBe(true)
+      expect(Number(a.limit)).toBeLessThanOrEqual(20)
+      expect(a.preview).toBe(true)
+    }
+  })
+
+  test('a reply too large is asked for again with half the limit, and the check still succeeds', async ($, on) => {
+    const { mcp } = world(on, { tooLargeOver: 5 })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(text).toContain('Inbox (checked by')
+    expect(text).toContain('evt_01')
+    const opens = lists(mcp).filter(a => a.type === 'task.request').map(a => a.limit)
+    expect(opens).toEqual([20, 10, 5])
+  })
+
+  test('too large even at one event: says so, does not say connecting, and does not retry every prompt', async ($, on) => {
+    const { mcp, statuses } = world(on, { tooLargeOver: 0 })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'one' } as never))
+    expect(text).toContain('the inbox check failed (reply too large)')
+    expect(text).not.toContain('tries again with the next prompt')
+    expect(text).toContain('limit=10')
+    expect(JSON.stringify(statuses.at(-1))).toContain('mempalace: inbox check failed (reply too large)')
+    expect(JSON.stringify(statuses)).not.toContain('connecting')
+    const before = mcp.length
+    expect(ctxt(await $.classic.UserPromptSubmit({ prompt: 'two' } as never))).toBe('')
+    expect(mcp.length).toBe(before)
+  })
+
+  test('the status line and the context name each cause', () => {
+    expect(failCause('mempalace_event_list: Error: result (58,780 characters) exceeds maximum allowed tokens. Output has been saved to /x')).toBe('too-large')
+    expect(failCause('mempalace_event_list: reply too large (58780 characters, starting "{")')).toBe('too-large')
+    expect(failCause('no MemPalace MCP server answered (mempalace: no such server)')).toBe('not-connected')
+    expect(failCause('no answer within 6s')).toBe('unreachable')
+    expect(failCause('mempalace_event_list: unknown parameter: writer')).toBe('error')
+    const base = { identity: ME, server: '', cursor: '', isListening: false, openTasks: [], checkedAt: 0 }
+    expect(statusText({ ...base, error: 'x', cause: 'not-connected', isRetrying: true }, 0)).toBe('mempalace: connecting')
+    expect(statusText({ ...base, error: 'x', cause: 'unreachable', isRetrying: true }, 0)).toBe('mempalace: inbox check failed (hub unreachable), trying again')
+    expect(statusText({ ...base, error: 'x', cause: 'too-large', isRetrying: false }, 0)).toBe('mempalace: inbox check failed (reply too large)')
+    expect(statusText({ ...base, error: 'x', cause: 'error', isRetrying: false }, 0)).toBe(`mempalace: inbox check failed (${CAUSE_TEXT.error})`)
+  })
+
+  test('a hub that answers with an error is retried, and is never called connecting', async ($, on) => {
+    world(on, { rawReply: '{"events": [{"id": "evt_cut' })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'one' } as never))
+    expect(text).toContain('the hub answered the inbox check with an error')
+    expect(text).toContain('tries again with the next prompt')
+  })
+
+  test('a named request closed by its sender is found on its own thread', async ($, on) => {
+    world(on, { openTasks: [TASK_NEEDS_XCODE], mine: [], thread: [{ id: 'evt_c2', type: 'event.ack', status: 'applied', from_agent: 'mac-mini:claude:app', correlation_id: 'evt_01', metadata: { ack_of: 'evt_01' } }] })
+    expect(ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))).toContain('not closed and not acked by this identity: 0')
+  })
+
+  test('a later session reads only what is new, keeps open requests it already knows, and drops one closed since', async ($, on) => {
+    let closedNow = false
+    const OTHER = { id: 'evt_05', type: 'task.request', status: 'open', from_agent: 'mac-mini:claude:app', to_agent: ME, correlation_id: 'task_5', body: 'second task' }
+    const { mcp, deliver } = world(on, {
+      openTasks: [OTHER, TASK_NEEDS_XCODE], mine: [],
+      thread: a => (closedNow && a.correlation_id === 'task_5' ? [{ id: 'evt_09', type: 'task.reply', status: 'applied', from_agent: 'mac-mini:claude:app', correlation_id: 'task_5' }] : []),
+    })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const first = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    expect(ctxt(first)).toContain('not closed and not acked by this identity: 2')
+    deliver(first)
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    mcp.length = 0
+    closedNow = true
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const second = ctxt(await $.classic.UserPromptSubmit({ prompt: 'again' } as never))
+    const reads = lists(mcp)
+    expect(reads.find(a => a.type === 'task.request')?.since_event_id).toBe('evt_05')
+    expect(reads.filter(a => a.correlation_id).every(a => Boolean(a.since_event_id))).toBe(true)
+    expect(second).toContain('not closed and not acked by this identity: 1')
+    expect(second).toContain('Build the iOS app')
+    expect(second).not.toContain('second task')
+    mcp.length = 0
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const third = ctxt(await $.classic.UserPromptSubmit({ prompt: 'once more' } as never))
+    expect(third).not.toContain('second task')
+    expect(lists(mcp).some(a => a.correlation_id === 'task_5')).toBe(false)
+  })
+
+  test('at most THREAD_CAP threads are read per check; the rest are named and read by the next check', async ($, on) => {
+    const many = Array.from({ length: THREAD_CAP + 2 }, (_, i) => ({ id: `evt_m${i}`, type: 'task.request', status: 'open', from_agent: 'peer:claude:x', to_agent: '*', correlation_id: `task_m${i}`, body: `job ${i}` }))
+    const { mcp } = world(on, { openTasks: many, mine: [] })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    const firstThreads = lists(mcp).filter(a => a.correlation_id).map(a => String(a.correlation_id))
+    expect(firstThreads.length).toBe(THREAD_CAP)
+    expect(text).toContain('Not yet checked for a closure: the threads of 2 of these')
+    mcp.length = 0
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
+    const next = lists(mcp).filter(a => a.correlation_id).map(a => String(a.correlation_id))
+    expect(next.slice(0, 2).every(t => !firstThreads.includes(t))).toBe(true)
+  })
+
+  test('a task too long to sign tells the model and the person how to send it signed', async ($, on) => {
+    const { deliver, toasts } = world(on)
+    const asked: string[] = []
+    on('tool.call', async (_$: unknown, e: Record<string, unknown>) => {
+      if (e.tool === 'AskUserQuestion') asked.push('asked')
+      return { result: JSON.stringify(e.metadata ?? null) } as never
+    })
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    await $.classic.UserPromptSubmit({ prompt: 'send a long task' } as never)
+    const out = await ($ as unknown as { tool: { call: (i: unknown) => Promise<{ result?: unknown; context?: string[] }> } }).tool.call(
+      { tool: 'mcp__claude_ai_Mempalace__mempalace_event_append', type: 'task.request', from_agent: ME, to_agent: 'mac-mini:claude:app', correlation_id: 'task_long', body: 'x'.repeat(3500), stream: 's', room: 'delegation' })
+    expect(String(out.result)).not.toContain('SIGNED')
+    expect(asked.length).toBe(0)
+    const note = (out.context ?? []).join('\n')
+    expect(note).toContain('went out UNSIGNED')
+    expect(note).toContain('3500 characters')
+    expect(note).toContain('mempalace_artifact_put')
+    expect(note).toContain('sha256')
+    expect(toasts.join('\n')).toContain('sent UNSIGNED')
   })
 })

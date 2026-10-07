@@ -28,6 +28,7 @@ bad() { echo "FAIL  $1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; FAIL=$((FA
 expect_eq()       { [ "$2" = "$3" ] && ok "$1" || bad "$1" "got: $2"; }
 expect_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing: $3" ;; esac; }
 expect_missing()  { case "$2" in *"$3"*) bad "$1" "unexpected: $3" ;; *) ok "$1" ;; esac; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }   # GNU stat, then BSD (macOS)
 context_of() { "$PY" -c 'import json,sys; d=json.load(sys.stdin); print(d.get("hookSpecificOutput",{}).get("additionalContext",""))'; }
 start_hub() { "$PY" "$ROOT/tests/fake_hub.py" --http 0 "$@" > "$TMP/hub.out" & HUB_PID=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q listening "$TMP/hub.out" 2>/dev/null && break; sleep 0.2; done; PORT="$(sed -n 's/listening on //p' "$TMP/hub.out")"; }
 stop_hub() { [ -n "$HUB_PID" ] && { kill "$HUB_PID"; wait "$HUB_PID" 2>/dev/null; HUB_PID=""; }; }
@@ -82,7 +83,7 @@ expect_eq "exactly one block" "$(grep -c 'mempalace-shared-brain:start' "$CLAUDE
 "$SETUP" rules check --project demo >/dev/null; expect_eq "check: current exits 0" "$?" "0"
 OUT="$("$SETUP" rules install --project demo --write)"
 expect_contains "second install is a no-op" "$OUT" "already current"
-sed -i 's/impersonate another agent/impersonate anybody/' "$CLAUDE_MD"
+sed -i.bak 's/impersonate another agent/impersonate anybody/' "$CLAUDE_MD" && rm -f "$CLAUDE_MD.bak"
 "$SETUP" rules check --project demo >/dev/null; expect_eq "check: edited block exits 4 (stale)" "$?" "4"
 "$SETUP" rules install --project demo --write >/dev/null
 expect_contains "install replaces a stale block in place" "$(cat "$CLAUDE_MD")" "impersonate another agent"
@@ -154,7 +155,7 @@ expect_eq "save_interval 0 disables the checkpoint" "$(echo "$PAYLOAD" | "$STOP"
 echo "# precompact snapshot and handoff"
 expect_eq "precompact never blocks" "$(echo "{\"session_id\":\"t1\",\"transcript_path\":\"$TMP/transcript.jsonl\",\"trigger\":\"auto\"}" | "$PRE")" "{}"
 [ -s "$TMP/state/pending/t1.md" ] && ok "pending snapshot written" || bad "pending snapshot written"
-expect_eq "snapshot is private" "$(stat -c %a "$TMP/state/pending/t1.md")" "600"
+expect_eq "snapshot is private" "$(mode_of "$TMP/state/pending/t1.md")" "600"
 OUT="$(echo '{"session_id":"t1","source":"compact","cwd":"/tmp/demo"}' | "$SS" | context_of)"
 expect_contains "post-compact handoff names the pending file" "$OUT" "snapshotted them to"
 expect_missing "probe skipped after compaction" "$OUT" "Live check"
@@ -227,7 +228,7 @@ start_hub --token cc-token --oauth-secret s3cret
 OUT="$(MP_CLIENT_SECRET=s3cret "$SETUP" probe 2>&1)"
 expect_contains "client credentials token reaches the hub" "$OUT" "hub reachable"
 [ -n "$(ls "$TMP/state/oauth" 2>/dev/null)" ] && ok "access token cached" || bad "access token cached"
-expect_eq "token cache is private" "$(stat -c %a "$TMP"/state/oauth/*.json)" "600"
+expect_eq "token cache is private" "$(mode_of "$TMP"/state/oauth/*.json)" "600"
 OUT="$(MP_CLIENT_SECRET=wrong "$SETUP" probe 2>&1)"
 expect_contains "cached token still used with a wrong secret (not expired)" "$OUT" "hub reachable"
 rm -f "$TMP"/state/oauth/*.json
@@ -405,7 +406,7 @@ echo "# signing and pairing"
 if command -v ssh-keygen >/dev/null; then
   KEYINFO="$("$SETUP" sign show)"
   expect_contains "a bridge key is created" "$KEYINFO" '"available": true'
-  expect_eq "the key is private" "$(stat -c %a "$TMP/bridge_ed25519")" "600"
+  expect_eq "the key is private" "$(mode_of "$TMP/bridge_ed25519")" "600"
   expect_contains "this machine trusts its own key" "$(cat "$TMP/trusted_signers")" 'office-desktop:* namespaces="mempalace-bridge" ssh-ed25519'
   SIG="$(printf '%s' '{"from":"office-desktop:claude:demo","to":"mac:claude:app","type":"task.request","correlation":"t1","body":"go  \ncafé"}' | "$SETUP" sign make --cwd /tmp/demo)"
   mkev() { "$PY" -c "import json,sys; e={'id':'evt_s1','from_agent':'office-desktop:claude:demo','to_agent':'mac:claude:app','type':'task.request','correlation_id':'t1','body':'go  \ncafé','metadata':{'bridge_sig':json.loads(sys.argv[1])}}; $1; print(json.dumps(e))" "$SIG"; }
@@ -455,8 +456,8 @@ else
 fi
 
 echo "# permissions"
-expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"
-expect_eq "config private" "$(stat -c %a "$TMP/config.json")" "600"
+expect_eq "state dir private" "$(mode_of "$TMP/state")" "700"
+expect_eq "config private" "$(mode_of "$TMP/config.json")" "600"
 
 rm -rf "$ROOT"/hooks/lib/__pycache__ "$ROOT"/tests/__pycache__
 echo

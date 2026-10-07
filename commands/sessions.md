@@ -13,8 +13,9 @@ Otherwise build the list:
    names the wing; the room is `presence`). Each check-in's first line reads
    `identity: <id> | checked_in <UTC time> | plugin <version> | listening <yes|no> | ...`. List them
    newest first; one older than 90 minutes is idle. If the room is empty, use the event log:
-1. `mempalace_event_list` with `limit=100` and `preview=true` (newest first). Page back with
-   `before_event_id=<oldest id seen>` once more if the first page covers less than a week.
+1. `mempalace_event_list` with `limit=20` and `preview=true` (newest first): a larger page can be
+   refused for its size. Page back with `before_event_id=<oldest id seen>` up to four more times
+   while the pages cover less than a week.
 2. Group the events by `from_agent`. For each identity report: when it last wrote, how many
    events it wrote in what you read, and its host (the part before the first `:`).
 3. Mark this session's own identity, and mark a name without two colons as a fixed or legacy id:
