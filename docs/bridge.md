@@ -173,7 +173,12 @@ Claude Code does the checking itself. When a task to be signed names an artifact
 the signing dialog fetches the artifact, checks its content against the hash, and shows its size
 and how it starts, so the person confirms the brief and not only the pointer. When a verified task
 names one, the turn that carries it out is told whether this machine found the artifact matching;
-one that does not match, or cannot be fetched, makes the task read level.
+one that does not match, cannot be fetched in the time a prompt allows, or is named with no sha256
+right after its id, makes the task read level.
+
+Keep a brief under about 60,000 characters. Claude Code refuses a tool result much larger than that,
+so a larger artifact cannot be fetched to check and is never confirmed: split it into up to three
+artifacts, each named with its own sha256 right after its id, or trim it.
 
 ## Receipts, claims and closing
 

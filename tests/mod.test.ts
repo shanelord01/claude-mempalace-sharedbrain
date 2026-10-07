@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { BRIDGE_TAG, CAUSE_TEXT, THREAD_CAP, longBodyNote, cleanBody, closedTasks, failCause, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, statusText, toItem, unmetRequirements } from '../hooks/register'
+import { BRIDGE_TAG, CAUSE_TEXT, THREAD_CAP, artifactRefs, longBodyNote, cleanBody, closedTasks, failCause, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, statusText, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', status: 'claimed', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] | ((args: Record<string, unknown>) => unknown[]); slowHubMs?: number; newRequests?: unknown[]; tooLargeOver?: number; store?: Record<string, unknown>; knownIds?: string[]; newest?: unknown[]; artifacts?: Record<string, string>; drawersTooLargeOver?: number } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] | ((args: Record<string, unknown>) => unknown[]); slowHubMs?: number; newRequests?: unknown[]; tooLargeOver?: number; store?: Record<string, unknown>; knownIds?: string[]; events?: unknown[]; newest?: unknown[]; artifacts?: Record<string, string>; drawersTooLargeOver?: number; slowArtifactMs?: number } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -98,7 +98,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (e.tool === 'mempalace_event_ack') return reply({ success: true, event_id: 'evt_ack' })
     if (e.tool === 'mempalace_add_drawer') return reply({ success: true, drawer_id: 'drawer_fleet_presence_new' })
     if (e.tool === 'mempalace_update_drawer') return e.args.drawer_id === 'drawer_gone' ? reply({ success: false, error: 'Drawer not found: drawer_gone' }) : reply({ success: true, drawer_id: e.args.drawer_id })
-    if (e.tool === 'mempalace_list_drawers') return reply({ drawers: (opts.presence ?? []).map((p, i) => ({ drawer_id: `drawer_p${i}`, content_preview: p })) })
+    if (e.tool === 'mempalace_list_drawers') return reply({ drawers: (opts.presence ?? []).map((p, i) => ({ drawer_id: `drawer_p${i}`, content_preview: p })).slice(0, Number(a.limit ?? 100)) })
     if (e.tool === 'mempalace_get_drawer') return reply({ content: (opts.presence ?? [])[Number(String(a.drawer_id).slice(8))] ?? '' })
     if (e.tool === 'mempalace_mesh_peers') return { value: { content: [{ type: 'text', text: JSON.stringify({ peers: opts.meshPeers ?? [] }) }], isError: false } }
     // Claude Code's own refusal of a result over its size limit: plain text, not JSON.
@@ -110,6 +110,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
       return { value: { content: [{ type: 'text', text: JSON.stringify({ error: `since_event_id '${String(a.since_event_id)}' not found` }) }], isError: false } }
     }
     if (e.tool === 'mempalace_artifact_get') {
+      if (opts.slowArtifactMs) await clock.sleep(opts.slowArtifactMs)
       const content = opts.artifacts?.[String(a.artifact_id)]
       return reply(content === undefined ? { error: `artifact '${String(a.artifact_id)}' not found` } : { artifact: { id: a.artifact_id, content } })
     }
@@ -125,6 +126,21 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     else if (a.limit === 1) events = []
     else if (a.limit === 20 && !a.before_event_id) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
     else if (a.before_event_id) events = []
+    // With the hub's append order known, since_event_id returns only what came after the cursor, in
+    // order, and since_created_at only what was made from then on, oldest first.
+    if (opts.knownIds && a.since_event_id) {
+      const at = (id: unknown) => opts.knownIds!.indexOf(String(id))
+      events = (events as Array<{ id?: string }>).filter(ev => at(ev.id) > at(a.since_event_id)).sort((x, y) => at(x.id) - at(y.id))
+    }
+    if (a.since_created_at && opts.events) {
+      events = (opts.events ?? []).filter(ev => String((ev as { created_at?: string }).created_at ?? '') >= String(a.since_created_at)
+        && (!a.to_agent || [String(a.to_agent), '*'].includes(String((ev as { to_agent?: string }).to_agent))))
+      if (a.since_event_id && opts.knownIds) {
+        const at = (id: unknown) => opts.knownIds!.indexOf(String(id))
+        events = (events as Array<{ id?: string }>).filter(ev => at(ev.id) > at(a.since_event_id))
+      }
+    }
+    events = events.slice(0, Number(a.limit ?? 50))
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events, count: events.length }) }], isError: false } }
   })
   const submitted: string[] = []
@@ -872,7 +888,7 @@ describe('review fixes', () => {
 
   test('a cursor the hub does not hold is said so and read again from the newest, never taken as an empty inbox', async ($, on) => {
     const stored = { 'sweep:office-desktop:claude:demo': { v: 1, open: [], openCursor: 'evt_lost_open', ackCursor: 'evt_lost_ack', threads: {} } }
-    const { mcp } = world(on, { ctx: context({ cursor: 'evt_lost' }), knownIds: ['evt_00'], store: stored, newest: [TASK_NEEDS_XCODE] })
+    const { mcp } = world(on, { ctx: context({ cursor: 'evt_lost' }), knownIds: ['evt_00', 'evt_01', 'evt_02'], store: stored, newest: [TASK_NEEDS_XCODE] })
     const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
     expect(text).toContain('The recorded inbox cursor evt_lost is not on this hub')
     expect(text).toContain('Stored read positions not on this hub, started again from the newest events: own acks, open requests')
@@ -998,5 +1014,62 @@ describe('review fixes', () => {
     const out = JSON.stringify(await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never))
     expect(out).toContain('Sessions checked in to the hub')
     expect(mcp.filter(c => c.tool === 'mempalace_list_drawers').map(c => c.args.limit)).toEqual([50, 25, 12])
+  })
+})
+
+describe('second review fixes', () => {
+  const ctxt = (r: { additionalContext?: readonly string[] }) => (r.additionalContext ?? []).join('\n')
+  const PEER = 'mac-mini:claude:app'
+  const BRIDGE = { mode: 'act', max_turns_per_hour: 12, max_turns_per_thread: 4, paused: [] as string[] }
+
+  test('a tracked request whose own id this hub does not hold is dropped, and the check says so', async ($, on) => {
+    const OLD = { id: 'evt_old', type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: 'task_old', body: 'from the old hub' }
+    const stored = { 'sweep:office-desktop:claude:demo': { v: 1, open: [OLD], openCursor: 'evt_02', ackCursor: '', threads: {} } }
+    world(on, { knownIds: ['evt_00', 'evt_01', 'evt_02'], store: stored, newRequests: [], mine: [] })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(text).toContain('Dropped, because this hub does not hold them (it was rebuilt, or this is another server): evt_old')
+    expect(text).not.toContain('from the old hub')
+  })
+
+  test('a lost inbox cursor reads again from a little before its time, so a reply near it is not lost', async ($, on) => {
+    const near = { id: 'evt_20261008T095500_r1', type: 'task.reply', status: 'applied', from_agent: PEER, to_agent: ME, created_at: '2026-10-08T09:55:00Z', body: 'reply in the window' }
+    const old = { id: 'evt_20261008T094000_r0', type: 'task.reply', from_agent: PEER, to_agent: ME, created_at: '2026-10-08T09:40:00Z', body: 'too old to read again' }
+    const { mcp } = world(on, { ctx: context({ cursor: 'evt_20261008T100000_dead' }), knownIds: [old.id, near.id, 'evt_01', 'evt_02'], events: [old, near], mine: [] })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(text).toContain('so the events from 2026-10-08T09:50:00Z on')
+    expect(text).toContain('reply in the window')
+    expect(text).not.toContain('too old to read again')
+    expect(mcp.some(c => c.args.since_created_at === '2026-10-08T09:50:00Z' && c.args.order === 'asc')).toBe(true)
+  })
+
+  test('a cursor read returns only what came after the cursor', async ($, on) => {
+    world(on, { ctx: context({ cursor: 'evt_02' }), knownIds: ['evt_03', 'evt_02', 'evt_01'], mine: [] })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(text).toContain('since the cursor evt_02: 1:')
+    expect(text).toContain('  - evt_01 ')
+  })
+
+  test('an artifact check that runs out of time leaves the task at read level and says why', async ($, on) => {
+    const TASK = { id: 'evt_t1', type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: 'task_t1', body: `Brief in art_20261008_ab12 sha256 ${'a'.repeat(64)}`, metadata: { bridge_sig: { v: 1, sig: 'good' } } }
+    const { submitted, clock } = world(on, { ctx: context({ bridge: BRIDGE, watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: [TASK], recentMail: [], artifacts: { art_20261008_ab12: 'x' }, slowArtifactMs: 30_000, turn: { allowed: true, threads: { task_t1: { turns: 1, is_last: false } } } })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
+    await clock.advance(60_000)
+    const turn = $.classic.UserPromptSubmit({ prompt: submitted[0] } as never)
+    await clock.advance(60_000)
+    const text = ctxt(await turn)
+    expect(text).toContain('the check ran out of time before the hook had to answer')
+    expect(text).toContain('evt_t1 is READ LEVEL')
+  })
+
+  test('each artifact pairs with the sha256 that follows it; one named without a sha256 is not confirmed', () => {
+    const h = 'b'.repeat(64)
+    expect(artifactRefs(`see art_aaaa1 and then art_bbbb2 sha256 ${h}`)).toEqual([{ id: 'art_aaaa1', sha256: '' }, { id: 'art_bbbb2', sha256: h }])
+  })
+
+  test('offset paging that repeats a drawer keeps it once and stops', async ($, on) => {
+    world(on, { drawersTooLargeOver: 2, presence: [`identity: ${PEER} | checked_in 2026-10-04T10:00:00Z | plugin 0.5.0 mod | listening yes | host mac-mini | project app`, 'other drawer', 'third drawer'] })
+    const out = JSON.stringify(await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never))
+    expect(out.split(PEER).length - 1).toBe(1)
   })
 })

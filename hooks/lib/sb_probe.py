@@ -446,6 +446,42 @@ def is_stale_cursor(exc):
     return bool(re.search(r"since_event_id\b.*\bnot found", str(exc)))
 
 
+WINDOW_MARGIN_SECONDS = 600
+
+
+def id_time(event_id):
+    """The UTC time an event id was made at, from its stamp (evt_YYYYMMDDTHHMMSS_...), or None."""
+    m = re.match(r"^[A-Za-z]+_(\d{8}T\d{6})_", str(event_id or ""))
+    if not m:
+        return None
+    try:
+        import calendar
+        return calendar.timegm(time.strptime(m.group(1), "%Y%m%dT%H%M%S"))
+    except ValueError:
+        return None
+
+
+def read_again(client, lost, pages=5, **filters):
+    """After the hub refused `lost` as a since_event_id: the events from a little before the time that
+    id was made, oldest first, each once, at most `pages` pages. Returns (events, window start); the
+    start is '' when the id has no readable stamp, and then the newest page is read instead."""
+    at = id_time(lost)
+    if at is None:
+        return list(reversed(list_events(client, **filters))), ""
+    window = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at - WINDOW_MARGIN_SECONDS))
+    seen, out, last = set(), [], None
+    for _ in range(pages):
+        page = list_events(client, since_created_at=window, order="asc", since_event_id=last, **filters)
+        for event in page:
+            if event.get("id") and event["id"] not in seen:
+                seen.add(event["id"])
+                out.append(event)
+        if not page or len(page) < int(filters.get("limit") or 50):
+            break
+        last = page[-1].get("id")
+    return out, window
+
+
 def list_events(client, **filters):
     """One mempalace_event_list call. An error the hub reports in the reply ({"error": ...}, which
     is how it answers an unknown since_event_id) or a reply that does not parse raises ProbeError,
@@ -580,11 +616,16 @@ def run_probe(cfg, ident, cursor=""):
             except ProbeError as exc:
                 if not is_stale_cursor(exc):
                     raise
-                # The hub does not hold the cursor (rebuilt, or another server): the newest instead.
-                result["cursor_note"] = ("The recorded cursor %s is not on this hub (it was rebuilt, or this is "
-                                         "another server), so the newest events were read instead; record the "
-                                         "newest event id as the cursor once they are reported." % cursor)
-                new = list(reversed(list_events(client, to_agent=ident, limit=limit)))
+                # The hub does not hold the cursor (rebuilt, or another server): read again from a little
+                # before its time, or the newest when its time cannot be read.
+                new, window = read_again(client, cursor, to_agent=ident, limit=limit)
+                result["cursor_note"] = (
+                    ("The recorded cursor %s is not on this hub (it was rebuilt, or this is another server), so the "
+                     "events from %s on were read again; some may have been reported before. Record the newest event "
+                     "id as the cursor once they are reported." % (cursor, window)) if window else
+                    ("The recorded cursor %s is not on this hub (it was rebuilt, or this is another server), and its "
+                     "time could not be read from it, so the newest events were read instead; record the newest "
+                     "event id as the cursor once they are reported." % cursor))
             result["new_since_cursor"] = [summarise_event(e) for e in new]
         tasks = list_events(client, to_agent=ident, type="task.request", status="open", limit=limit)
         # Closures come from each request's own thread (an ack copies the request's correlation id, or
@@ -628,17 +669,23 @@ def sweep_watch(cfg, ident, watch):
         client.initialize()
         filters = dict(to_agent=ident, correlation_id=watch.get("correlation_id") or None,
                        topic=watch.get("topic") or None, limit=int(cfg["wake"].get("limit") or 50))
+        stale = ""
         try:
             events = list_events(client, since_event_id=watch.get("since_event_id") or None, order="asc", **filters)
         except ProbeError as exc:
             if not is_stale_cursor(exc):
                 raise
-            # The hub does not hold the watch cursor (rebuilt, or another server): start again from
-            # the newest event, as a first look does, and say so.
-            newest = list_events(client, order="desc", **dict(filters, limit=1))
-            last = (newest[0].get("id") if newest else "") or ""
-            return [], last, "STALE: the watch cursor %s is not on this hub; listening starts again from %s" % (
-                watch.get("since_event_id"), last or "the newest event")
+            # The hub does not hold the watch cursor (rebuilt, or another server): the events from a
+            # little before its time are read again and handed over, and the note says so. With no
+            # readable time, listening starts again from the newest event, as a first look does.
+            lost = watch.get("since_event_id")
+            events, window = read_again(client, lost, **filters)
+            if not window:
+                newest = events[-1:] if events else []
+                last = (newest[0].get("id") if newest else "") or ""
+                return [], last, "STALE: the watch cursor %s is not on this hub; listening starts again from %s" % (
+                    lost, last or "the newest event")
+            stale = "STALE: the watch cursor %s is not on this hub; events from %s on were read again" % (lost, window)
         types = set(watch.get("types") or cfg["wake"].get("types") or [])
         matched = []
         last_id = watch.get("since_event_id") or ""
@@ -649,7 +696,7 @@ def sweep_watch(cfg, ident, watch):
             if types and event.get("type") not in types:
                 continue
             matched.append(summarise_event(event))
-        return matched, last_id, ""
+        return matched, last_id, stale
     except ProbeError as exc:
         return [], watch.get("since_event_id") or "", str(exc)
     except Exception as exc:

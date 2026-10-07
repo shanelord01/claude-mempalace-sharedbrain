@@ -174,6 +174,10 @@ expect_missing "acked task not listed" "$OUT" "  - evt_02_task_acked"
 OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
 expect_contains "a cursor the hub does not hold is said so, not read as an empty inbox" "$OUT" "The recorded cursor evt_99_gone is not on this hub"
 expect_contains "the newest events are read instead" "$OUT" "  - evt_01_task_unacked"
+"$SETUP" cursor set evt_20261002T003000_gone >/dev/null
+OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
+expect_contains "a lost cursor with a time reads again from a little before it" "$OUT" "the events from 2026-10-02T00:20:00Z on were read again"
+expect_contains "a reply in that window is shown" "$OUT" "  - evt_06_reply_blocked"
 "$SETUP" cursor clear >/dev/null
 expect_missing "other agent's task not listed" "$OUT" "evt_05_not_mine"
 "$SETUP" cursor set evt_04_broadcast >/dev/null
@@ -423,7 +427,7 @@ class Hub:
                 and (not args.get("to_agent") or e.get("to_agent") in (args["to_agent"], "*"))]
         if since:
             rows = [e for e in rows if ids.index(e["id"]) > ids.index(since)]
-        if args.get("order") == "desc" or not since:
+        if args.get("order") == "desc" or (not since and args.get("order") != "asc"):
             rows = rows[::-1]
         return {"events": rows[: args["limit"]]}
 tasks = [{"id": "t%d" % i, "correlation_id": "c%d" % i, "to_agent": "*", "from_agent": "s:claude:a"} for i in range(8)]
@@ -447,12 +451,24 @@ small = Hub(tasks, cap=3)
 print(len(P.list_events(small, to_agent="*", limit=20)), [c["limit"] for c in small.calls])
 P.open_client = lambda cfg: (Hub(tasks), "http", "")
 print(P.sweep_watch({"wake": {"limit": 50}}, "me:claude:b", {"since_event_id": "gone"})[1:])
+class TimedHub(Hub):
+    def call_tool(self, name, args):
+        got = Hub.call_tool(self, name, args)
+        if args.get("since_created_at") and "events" in got:
+            got["events"] = [e for e in got["events"] if e.get("created_at", "") >= args["since_created_at"]]
+        return got
+timed = [{"id": "r0", "to_agent": "me:claude:b", "type": "task.reply", "from_agent": "p", "created_at": "2026-10-08T09:40:00Z", "body": "", "status": ""},
+         {"id": "r1", "to_agent": "me:claude:b", "type": "task.reply", "from_agent": "p", "created_at": "2026-10-08T09:55:00Z", "body": "", "status": ""}]
+P.open_client = lambda cfg: (TimedHub(timed), "http", "")
+got = P.sweep_watch({"wake": {"limit": 50, "types": ["task.reply"]}}, "me:claude:b", {"since_event_id": "evt_20261008T100000_gone"})
+print([m["id"] for m in got[0]], got[1], got[2])
 PYEOF
 )"
 expect_eq "probe threads: closure on a long thread found, newest first, rotated, stale and unreadable replies handled" "$OUT" "closure-found desc 6 ['c6', 'c7']
 stale
 2 [20, 10, 5, 2]
-('t7', 'STALE: the watch cursor gone is not on this hub; listening starts again from t7')"
+('t7', 'STALE: the watch cursor gone is not on this hub; listening starts again from t7')
+['r1'] r1 STALE: the watch cursor evt_20261008T100000_gone is not on this hub; events from 2026-10-08T09:50:00Z on were read again"
 
 "$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{}).pop("sign_tasks",None); json.dump(d,open(p,"w"))' "$TMP/config.json"
 expect_contains "signing asks once per recipient by default" "$("$SETUP" bridge status)" '"sign_tasks": "session"'

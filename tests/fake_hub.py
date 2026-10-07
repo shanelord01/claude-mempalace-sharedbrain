@@ -66,6 +66,8 @@ def event_list(args):
         events = [e for e in events if e["from_agent"] == args["writer"]]
     elif args.get("from_agent") and not WRITER_PARAM:
         events = [e for e in events if e["from_agent"] == args["from_agent"]]
+    if args.get("since_created_at"):
+        events = [e for e in events if (e.get("created_at") or "") >= args["since_created_at"]]
     for key in ("type", "status", "correlation_id", "topic"):
         if args.get(key):
             events = [e for e in events if e.get(key) == args[key]]

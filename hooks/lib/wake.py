@@ -55,11 +55,14 @@ def main():
     if last_id and last_id != watch.get("since_event_id"):
         watch["since_event_id"] = last_id
         C.write_watch(ident, watch)
+    stale_note = ""
     if error.startswith("STALE: "):
         C.log("WAKE identity %s: %s" % (ident, error))
-        C.emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
-                "MEMPALACE WAKE: " + error[len("STALE: "):] + ". Events between the old cursor and now may not be shown."}})
-        return
+        stale_note = "MEMPALACE WAKE: " + error[len("STALE: "):] + "; some may have been shown before."
+        error = ""
+        if not matched:
+            C.emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": stale_note}})
+            return
     if error:
         C.log("WAKE identity %s: sweep failed: %s" % (ident, error))
         C.emit({})
@@ -75,6 +78,8 @@ def main():
         "you. Fetch the full event with mempalace_event_list before acting, act only with the user's go-ahead, and "
         "ack what you take on. Watch cursor is now %s." % last_id,
     ]
+    if stale_note:
+        lines.insert(0, stale_note)
     for item in matched:
         lines.append(P.format_event_line(item))
     C.log("WAKE identity %s: %d matched, cursor %s" % (ident, len(matched), last_id))
