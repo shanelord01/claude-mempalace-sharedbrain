@@ -55,6 +55,11 @@ def main():
     if last_id and last_id != watch.get("since_event_id"):
         watch["since_event_id"] = last_id
         C.write_watch(ident, watch)
+    if error.startswith("STALE: "):
+        C.log("WAKE identity %s: %s" % (ident, error))
+        C.emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
+                "MEMPALACE WAKE: " + error[len("STALE: "):] + ". Events between the old cursor and now may not be shown."}})
+        return
     if error:
         C.log("WAKE identity %s: sweep failed: %s" % (ident, error))
         C.emit({})

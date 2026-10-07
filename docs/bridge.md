@@ -166,6 +166,14 @@ characters. A longer brief goes in a hub artifact, and the signed task points at
 3. The worker fetches the brief with `mempalace_artifact_get` and checks its `sha256` against the
    one in the signed task before acting. A brief whose hash differs is not the one that was signed,
    and the worker only reports it.
+4. If the long text already went out unsigned, close that event with `mempalace_event_ack` and
+   `status=superseded` once the signed task is sent, so nobody takes it as still open.
+
+Claude Code does the checking itself. When a task to be signed names an artifact id and a sha256,
+the signing dialog fetches the artifact, checks its content against the hash, and shows its size
+and how it starts, so the person confirms the brief and not only the pointer. When a verified task
+names one, the turn that carries it out is told whether this machine found the artifact matching;
+one that does not match, or cannot be fetched, makes the task read level.
 
 ## Receipts, claims and closing
 

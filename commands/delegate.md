@@ -28,8 +28,8 @@ MEMPALACE SHARED BRAIN block in this session's context.
    signed. Put a longer brief in an artifact first (`mempalace_artifact_put`, kind `note`), then
    send a short task that names the artifact id and its `sha256` and tells the worker to fetch it
    with `mempalace_artifact_get` and check the hash before acting (docs/bridge.md, Long briefs). If
-   a task went out unsigned, the plugin says why after the tool's result: tell the user, and send
-   it again the short way.
+   a task went out unsigned, the plugin says why after the tool's result: tell the user, send it
+   again the short way, then ack the unsigned one with `status=superseded`.
    Otherwise, create it with `mempalace_task_create` (project, from_agent, to_agent, goal, branch,
    base_commit, done). When there are requirements, the goal's first line is
    `Requires: <req>, <req>`; task_create has no metadata field, and workers read that line. It returns the stored `task.request` and a handoff line. For non-code work

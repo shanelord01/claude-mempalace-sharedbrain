@@ -66,8 +66,10 @@ the open requests it is still watching, and where each read stopped, are kept in
 store between sessions. Whether a request is closed comes from that request's own thread, at most
 six threads per check (the rest are read by later checks). A reply too large for Claude Code is
 asked for again with half the limit, and a check that still fails says why on the status line
-(`mempalace: inbox check failed (reply too large)`, `hub unreachable`, `hub error`);
-`mempalace: connecting` means only that the connection is not up yet. While listening is armed it checks every minute
+(`mempalace: inbox check failed (reply too large)`, `reply unreadable`, `hub slow to answer`,
+`hub unreachable`, `hub error`);
+`mempalace: connecting` means only that the connection is not up yet. A stored cursor the hub does
+not hold (after a rebuild, or on another server) is reported and read again from the newest events. While listening is armed it checks every minute
 in the background, raises a toast and hands new mail over with the next prompt. The status line
 shows the identity, open tasks and new mail. `/mempalace` opens a pane with the same and closes it
 again (`/mempalace open` and `/mempalace close` say which); Escape and the pane's Close button

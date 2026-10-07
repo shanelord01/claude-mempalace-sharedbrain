@@ -21,7 +21,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" cursor get
 
 Keep every read small: `preview=true` and `limit=10` or less, paging on with `since_event_id`
 while a page comes back full. A preview event is still about 1,500 characters, and Claude Code
-refuses a reply over its token limit (one of about 59,000 characters was refused). Never list acks or replies across the whole hub.
+refuses a reply over its token limit. A reply of `{"error": "since_event_id ... not found"}` means
+the hub does not hold that cursor (it was rebuilt, or this is another server): say so, read the
+newest events without `since_event_id`, and record the newest id as the cursor. Never list acks or replies across the whole hub.
 
 1. With a cursor: `mempalace_event_list` with `to_agent=<identity>`, `since_event_id=<cursor>`,
    `preview=true`, `limit=10`. Omit `order`: a resume from a cursor is chronological. Without a cursor, the

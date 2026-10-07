@@ -170,6 +170,11 @@ expect_contains "unacked listed" "$OUT" "  - evt_01_task_unacked"
 expect_contains "unmeetable requirement flagged" "$OUT" "THIS MACHINE CANNOT MEET: xcode>=99"
 expect_contains "Requires line read from the body" "$OUT" "requires python; this machine meets it"
 expect_missing "acked task not listed" "$OUT" "  - evt_02_task_acked"
+"$SETUP" cursor set evt_99_gone >/dev/null
+OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
+expect_contains "a cursor the hub does not hold is said so, not read as an empty inbox" "$OUT" "The recorded cursor evt_99_gone is not on this hub"
+expect_contains "the newest events are read instead" "$OUT" "  - evt_01_task_unacked"
+"$SETUP" cursor clear >/dev/null
 expect_missing "other agent's task not listed" "$OUT" "evt_05_not_mine"
 "$SETUP" cursor set evt_04_broadcast >/dev/null
 OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
@@ -394,6 +399,60 @@ print(sorted(P.closed_tasks([ack("x:claude:z", "evt_n")], [named], "me:claude:b"
 PYEOF
 )"
 expect_eq "closures count only from sender, addressee or self; anyone for a broadcast" "$OUT" "[] ['evt_n'] ['evt_b']"
+OUT="$("$PY" - "$ROOT/hooks/lib" <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1])
+import sb_probe as P
+class Hub:
+    """Answers mempalace_event_list like the hub: an error reply for an unknown since_event_id, an
+    unreadable reply over `cap` events, and order desc after since_event_id."""
+    def __init__(self, events, cap=100):
+        self.events, self.cap, self.calls = events, cap, []
+    def initialize(self):
+        pass
+    def close(self):
+        pass
+    def call_tool(self, name, args):
+        self.calls.append(dict(args))
+        ids = [e["id"] for e in self.events]
+        since = args.get("since_event_id")
+        if since and since not in ids:
+            return {"error": "since_event_id %r not found" % since}
+        if args["limit"] > self.cap:
+            return {"raw": "{\"events\": [{\"id\": \"cut"}
+        rows = [e for e in self.events if (not args.get("correlation_id") or e.get("correlation_id") == args["correlation_id"])
+                and (not args.get("to_agent") or e.get("to_agent") in (args["to_agent"], "*"))]
+        if since:
+            rows = [e for e in rows if ids.index(e["id"]) > ids.index(since)]
+        if args.get("order") == "desc" or not since:
+            rows = rows[::-1]
+        return {"events": rows[: args["limit"]]}
+tasks = [{"id": "t%d" % i, "correlation_id": "c%d" % i, "to_agent": "*", "from_agent": "s:claude:a"} for i in range(8)]
+long = [{"id": "f%d" % i, "correlation_id": "c0", "type": "status"} for i in range(30)]
+closer = {"id": "z", "correlation_id": "c0", "type": "event.ack", "status": "applied", "from_agent": "s:claude:a", "metadata": {"ack_of": "t0"}}
+hub = Hub(tasks + long + [closer])
+got = P.thread_events(hub, tasks, "me:claude:b", now=1)
+first = [c["correlation_id"] for c in hub.calls]
+hub.calls = []
+P.thread_events(hub, tasks, "me:claude:b", now=2)
+second = [c["correlation_id"] for c in hub.calls][:2]
+print("closure-found" if any(e["id"] == "z" for e in got) else "closure-missed",
+      "desc" if all(c.get("order") == "desc" for c in hub.calls) else "asc",
+      len(first), sorted(second))
+try:
+    P.list_events(Hub(tasks), to_agent="*", since_event_id="gone", limit=5)
+    print("stale-read-as-empty")
+except P.ProbeError as exc:
+    print("stale" if P.is_stale_cursor(exc) else "other")
+small = Hub(tasks, cap=3)
+print(len(P.list_events(small, to_agent="*", limit=20)), [c["limit"] for c in small.calls])
+P.open_client = lambda cfg: (Hub(tasks), "http", "")
+print(P.sweep_watch({"wake": {"limit": 50}}, "me:claude:b", {"since_event_id": "gone"})[1:])
+PYEOF
+)"
+expect_eq "probe threads: closure on a long thread found, newest first, rotated, stale and unreadable replies handled" "$OUT" "closure-found desc 6 ['c6', 'c7']
+stale
+2 [20, 10, 5, 2]
+('t7', 'STALE: the watch cursor gone is not on this hub; listening starts again from t7')"
 
 "$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{}).pop("sign_tasks",None); json.dump(d,open(p,"w"))' "$TMP/config.json"
 expect_contains "signing asks once per recipient by default" "$("$SETUP" bridge status)" '"sign_tasks": "session"'

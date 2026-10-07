@@ -4,7 +4,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { BRIDGE_TAG, CAUSE_TEXT, THREAD_CAP, cleanBody, closedTasks, failCause, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, statusText, toItem, unmetRequirements } from '../hooks/register'
+import { BRIDGE_TAG, CAUSE_TEXT, THREAD_CAP, longBodyNote, cleanBody, closedTasks, failCause, itemLine, levelOf, parseCheckIn, requiresOf, senderLine, sessionsTable, statusText, toItem, unmetRequirements } from '../hooks/register'
 
 const ME = 'office-desktop:claude:demo'
 const SERVER = 'claude.ai Mempalace'
@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', status: 'claimed', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] | ((args: Record<string, unknown>) => unknown[]); slowHubMs?: number; newRequests?: unknown[]; tooLargeOver?: number; store?: Record<string, unknown> } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] | ((args: Record<string, unknown>) => unknown[]); slowHubMs?: number; newRequests?: unknown[]; tooLargeOver?: number; store?: Record<string, unknown>; knownIds?: string[]; newest?: unknown[]; artifacts?: Record<string, string>; drawersTooLargeOver?: number } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -91,6 +91,9 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
     const a = e.args
     const reply = (data: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(data) }], isError: false } })
+    if (e.tool === 'mempalace_list_drawers' && opts.drawersTooLargeOver !== undefined && Number(a.limit) > opts.drawersTooLargeOver) {
+      return { value: { content: [{ type: 'text', text: 'Error: result (70,000 characters) exceeds maximum allowed tokens. Output has been saved to /tmp/x.txt' }], isError: false } }
+    }
     if (e.tool === 'mempalace_event_append') return reply({ success: true, event: { id: 'evt_pair' } })
     if (e.tool === 'mempalace_event_ack') return reply({ success: true, event_id: 'evt_ack' })
     if (e.tool === 'mempalace_add_drawer') return reply({ success: true, drawer_id: 'drawer_fleet_presence_new' })
@@ -102,6 +105,14 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     if (e.tool === 'mempalace_event_list' && opts.tooLargeOver !== undefined && Number(a.limit ?? 50) > opts.tooLargeOver) {
       return { value: { content: [{ type: 'text', text: `Error: result (61,234 characters) exceeds maximum allowed tokens. Output has been saved to /tmp/mcp-result.txt` }], isError: false } }
     }
+    // A hub that honours since_event_id: an id it does not hold is an error, in the hub's own shape.
+    if (e.tool === 'mempalace_event_list' && opts.knownIds && a.since_event_id && !opts.knownIds.includes(String(a.since_event_id))) {
+      return { value: { content: [{ type: 'text', text: JSON.stringify({ error: `since_event_id '${String(a.since_event_id)}' not found` }) }], isError: false } }
+    }
+    if (e.tool === 'mempalace_artifact_get') {
+      const content = opts.artifacts?.[String(a.artifact_id)]
+      return reply(content === undefined ? { error: `artifact '${String(a.artifact_id)}' not found` } : { artifact: { id: a.artifact_id, content } })
+    }
     let events: unknown[] = []
     if (a.type === 'bridge.pair') events = [{ id: 'evt_offer', type: 'bridge.pair', from_agent: 'mac-mini:claude:app', metadata: { bridge_pair: { v: 1 } } }]
     else if (a.correlation_id) events = typeof opts.thread === 'function' ? opts.thread(a) : opts.thread ?? []
@@ -110,6 +121,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
     else if (a.type === 'task.request') events = a.since_event_id ? opts.newRequests ?? [] : opts.openTasks ?? [TASK_NEEDS_XCODE, TASK_ACKED]
     else if (a.since_event_id === 'evt_00') events = opts.recentMail ?? [TASK_NEEDS_XCODE]
     else if (a.since_event_id === 'evt_w1') events = opts.newMail ?? []
+    else if (opts.newest && a.to_agent && !a.type && !a.since_event_id) events = opts.newest
     else if (a.limit === 1) events = []
     else if (a.limit === 20 && !a.before_event_id) events = [MY_ACK, TASK_ACKED, TASK_NEEDS_XCODE]
     else if (a.before_event_id) events = []
@@ -759,19 +771,24 @@ describe('inbox check size and scope', () => {
     expect(failCause('mempalace_event_list: Error: result (58,780 characters) exceeds maximum allowed tokens. Output has been saved to /x')).toBe('too-large')
     expect(failCause('mempalace_event_list: reply too large (58780 characters, starting "{")')).toBe('too-large')
     expect(failCause('no MemPalace MCP server answered (mempalace: no such server)')).toBe('not-connected')
-    expect(failCause('no answer within 6s')).toBe('unreachable')
+    expect(failCause('no answer within 6s')).toBe('slow')
+    expect(failCause('fetch failed: ECONNREFUSED')).toBe('unreachable')
+    expect(failCause('mempalace_event_list: the reply could not be read (27 characters)')).toBe('unreadable')
     expect(failCause('mempalace_event_list: unknown parameter: writer')).toBe('error')
     const base = { identity: ME, server: '', cursor: '', isListening: false, openTasks: [], checkedAt: 0 }
     expect(statusText({ ...base, error: 'x', cause: 'not-connected', isRetrying: true }, 0)).toBe('mempalace: connecting')
     expect(statusText({ ...base, error: 'x', cause: 'unreachable', isRetrying: true }, 0)).toBe('mempalace: inbox check failed (hub unreachable), trying again')
+    expect(statusText({ ...base, error: 'x', cause: 'slow', isRetrying: true }, 0)).toBe('mempalace: inbox check failed (hub slow to answer), trying again')
+    expect(statusText({ ...base, error: 'x', cause: 'unreadable', isRetrying: false }, 0)).toBe('mempalace: inbox check failed (reply unreadable)')
     expect(statusText({ ...base, error: 'x', cause: 'too-large', isRetrying: false }, 0)).toBe('mempalace: inbox check failed (reply too large)')
     expect(statusText({ ...base, error: 'x', cause: 'error', isRetrying: false }, 0)).toBe(`mempalace: inbox check failed (${CAUSE_TEXT.error})`)
   })
 
-  test('a hub that answers with an error is retried, and is never called connecting', async ($, on) => {
+  test('a reply cut short is retried, and is called neither a hub error nor connecting', async ($, on) => {
     world(on, { rawReply: '{"events": [{"id": "evt_cut' })
     const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'one' } as never))
-    expect(text).toContain('the hub answered the inbox check with an error')
+    expect(text).toContain('reply to the inbox check could not be read')
+    expect(text).not.toContain('with an error')
     expect(text).toContain('tries again with the next prompt')
   })
 
@@ -816,7 +833,7 @@ describe('inbox check size and scope', () => {
     const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
     const firstThreads = lists(mcp).filter(a => a.correlation_id).map(a => String(a.correlation_id))
     expect(firstThreads.length).toBe(THREAD_CAP)
-    expect(text).toContain('Not yet checked for a closure: the threads of 2 of these')
+    expect(text).toContain('Not yet checked for a closure, so read level until a check reads their threads: evt_m1, evt_m0')
     mcp.length = 0
     await $.classic.SessionStart({ source: 'startup' } as never)
     await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
@@ -843,5 +860,143 @@ describe('inbox check size and scope', () => {
     expect(note).toContain('mempalace_artifact_put')
     expect(note).toContain('sha256')
     expect(toasts.join('\n')).toContain('sent UNSIGNED')
+  })
+})
+
+describe('review fixes', () => {
+  const ctxt = (r: { additionalContext?: readonly string[] }) => (r.additionalContext ?? []).join('\n')
+  const lists = (mcp: Array<{ tool: string; args: Record<string, unknown> }>) => mcp.filter(c => c.tool === 'mempalace_event_list').map(c => c.args)
+  const PEER = 'mac-mini:claude:app'
+  const BRIDGE = { mode: 'act', max_turns_per_hour: 12, max_turns_per_thread: 4, paused: [] as string[] }
+  const hex = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('')
+
+  test('a cursor the hub does not hold is said so and read again from the newest, never taken as an empty inbox', async ($, on) => {
+    const stored = { 'sweep:office-desktop:claude:demo': { v: 1, open: [], openCursor: 'evt_lost_open', ackCursor: 'evt_lost_ack', threads: {} } }
+    const { mcp } = world(on, { ctx: context({ cursor: 'evt_lost' }), knownIds: ['evt_00'], store: stored, newest: [TASK_NEEDS_XCODE] })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(text).toContain('The recorded inbox cursor evt_lost is not on this hub')
+    expect(text).toContain('Stored read positions not on this hub, started again from the newest events: own acks, open requests')
+    expect(text).toContain('evt_01')
+    expect(text).toContain('not closed and not acked by this identity: 1')
+    expect(lists(mcp).some(a => a.type === 'task.request' && !a.since_event_id)).toBe(true)
+  })
+
+  test('a watch cursor the hub does not hold restarts listening from the newest event, with a toast', async ($, on) => {
+    const { calls, toasts, deliver } = world(on, { ctx: context({ watch: { armed: true, since_event_id: 'evt_gone' } }), knownIds: ['evt_00', 'evt_01'], newest: [{ id: 'evt_09', type: 'status', from_agent: PEER, to_agent: '*' }] })
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    expect(toasts.join('\n')).toContain('the watch cursor evt_gone is not on this hub')
+    expect(calls).toContainEqual(['listen', 'cursor', 'evt_09'])
+  })
+
+  test('a signed task whose thread was not read this check stays read level and starts no turn', async ($, on) => {
+    const many = Array.from({ length: THREAD_CAP + 1 }, (_, i) => ({ id: `evt_s${i}`, type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: `task_s${i}`, body: `job ${i}`, metadata: { bridge_sig: { v: 1, sig: 'good' } } }))
+    world(on, { ctx: context({ bridge: BRIDGE }), openTasks: many, mine: [] })
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    const line = (id: string) => text.split('\n').find(l => l.includes(`  - ${id} `)) ?? ''
+    expect(line('evt_s0')).toContain('[level read')
+    expect(line(`evt_s${THREAD_CAP}`)).toContain('[level act')
+  })
+
+  test('the own-acks cursor moves past a page that held none of this identity\'s acks', async ($, on) => {
+    const { mcp } = world(on, { mine: [{ id: 'evt_z', type: 'event.ack', status: 'applied', from_agent: 'someone:else:x', metadata: { ack_of: 'evt_q' } }] })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    mcp.length = 0
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
+    expect(lists(mcp).find(a => a.type === 'event.ack')?.since_event_id).toBe('evt_z')
+  })
+
+  test('a broadcast closure note survives a delivery that never reached the model, and is not repeated after one that did', async ($, on) => {
+    const old = { id: 'evt_o', type: 'task.request', status: 'open', from_agent: PEER, to_agent: '*', correlation_id: 'task_old', body: 'old broadcast' }
+    const closure = { id: 'evt_oc', type: 'event.ack', status: 'applied', from_agent: 'peer:claude:x', correlation_id: 'task_old', metadata: { ack_of: 'evt_o' } }
+    const { deliver } = world(on, { openTasks: [old], mine: [], thread: a => (a.since_event_id === 'evt_o' ? [closure] : []) })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    expect(ctxt(await $.classic.UserPromptSubmit({ prompt: 'one' } as never))).toContain('evt_o closed by peer:claude:x') // dropped
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    const second = await $.classic.UserPromptSubmit({ prompt: 'two' } as never)
+    expect(ctxt(second)).toContain('evt_o closed by peer:claude:x')
+    deliver(second)
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    expect(ctxt(await $.classic.UserPromptSubmit({ prompt: 'three' } as never))).not.toContain('evt_o closed by')
+  })
+
+  test('the signature check pages back until it finds the full body of a task cut short in the preview', async ($, on) => {
+    const TASK = { id: 'evt_t1', type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: 'task_t1', body: 'run the tests', metadata: { bridge_sig: { v: 1, sig: 'good' } } }
+    const filler = Array.from({ length: 10 }, (_, i) => ({ id: `evt_f${i}`, type: 'task.request', from_agent: PEER, to_agent: ME, correlation_id: 'task_t1', body: 'later' }))
+    const { submitted, clock } = world(on, {
+      ctx: context({ bridge: BRIDGE, watch: { armed: true, since_event_id: 'evt_w1' } }), recentMail: [], turn: { allowed: true, threads: { task_t1: { turns: 1, is_last: false } } },
+      newMail: [{ ...TASK, body: 'run the', body_truncated: true }],
+      thread: a => (a.preview === false ? (a.before_event_id ? [TASK] : filler) : []),
+    })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
+    await clock.advance(60_000)
+    expect(submitted[0]).toContain('🔐 signature verified (SHA256:real)')
+  })
+
+  test('an act-level task naming a brief in an artifact: checked here, and a mismatch makes it read level', async ($, on) => {
+    const brief = 'Full brief: build and test everything.'
+    const sha = await hex(brief)
+    const TASK = { id: 'evt_t1', type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: 'task_t1', body: `Brief in art_20261008_ab12 sha256 ${sha}`, metadata: { bridge_sig: { v: 1, sig: 'good' } } }
+    const run = async (content: string) => {
+      const { submitted, clock } = world(on, { ctx: context({ bridge: BRIDGE, watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: [TASK], recentMail: [], artifacts: { art_20261008_ab12: content }, turn: { allowed: true, threads: { task_t1: { turns: 1, is_last: false } } } })
+      await $.classic.SessionStart({ source: 'startup' } as never)
+      await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
+      await clock.advance(60_000)
+      return ctxt(await $.classic.UserPromptSubmit({ prompt: submitted[0] } as never))
+    }
+    const good = await run(brief)
+    expect(good).toContain('Artifact art_20261008_ab12: fetched by this machine, and its content matches')
+    expect(good).not.toContain('is READ LEVEL')
+  })
+
+  test('an artifact that does not match its sha256 makes the task read level', async ($, on) => {
+    const sha = await hex('the real brief')
+    const TASK = { id: 'evt_t1', type: 'task.request', status: 'open', from_agent: PEER, to_agent: ME, correlation_id: 'task_t1', body: `Brief in art_20261008_ab12 sha256 ${sha}`, metadata: { bridge_sig: { v: 1, sig: 'good' } } }
+    const { submitted, clock } = world(on, { ctx: context({ bridge: BRIDGE, watch: { armed: true, since_event_id: 'evt_w1' } }), newMail: [TASK], recentMail: [], artifacts: { art_20261008_ab12: 'a swapped brief' }, turn: { allowed: true, threads: { task_t1: { turns: 1, is_last: false } } } })
+    await $.classic.SessionStart({ source: 'startup' } as never)
+    await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
+    await clock.advance(60_000)
+    const text = ctxt(await $.classic.UserPromptSubmit({ prompt: submitted[0] } as never))
+    expect(text).toContain('evt_t1 is READ LEVEL')
+    expect(text).toContain('NOT CONFIRMED, its content does not match')
+  })
+
+  test('the signing dialog shows the brief an artifact holds, checked here, not only the pointer', async ($, on) => {
+    const brief = 'Step one: do the thing properly.'
+    const sha = await hex(brief)
+    const { deliver } = world(on, { artifacts: { art_20261008_cd34: brief } })
+    const asked: string[] = []
+    on('tool.call', async (_$: unknown, e: Record<string, unknown>) => {
+      if (e.tool === 'AskUserQuestion') {
+        const q = (e.questions as Array<{ question: string }>)[0]?.question ?? ''
+        asked.push(q)
+        return { result: { questions: e.questions, answers: { [q]: 'Sign and send' } } } as never
+      }
+      return { result: JSON.stringify(e.metadata ?? null) } as never
+    })
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    await $.classic.UserPromptSubmit({ prompt: 'send it' } as never)
+    await ($ as unknown as { tool: { call: (i: unknown) => Promise<unknown> } }).tool.call({ tool: 'mcp__claude_ai_Mempalace__mempalace_event_append', type: 'task.request', from_agent: ME, to_agent: PEER, correlation_id: 'task_a', body: `Brief: art_20261008_cd34 sha256 ${sha}` })
+    expect(asked.at(-1)).toContain('matches the sha256 the task gives (32 characters). It starts: "Step one: do the thing properly."')
+  })
+
+  test('an append that failed adds no "went out unsigned" line, and the long-brief advice closes the unsigned original', async ($, on) => {
+    const { deliver } = world(on)
+    on('tool.call', async () => ({ result: 'hub refused', isError: true }) as never)
+    deliver(await $.classic.UserPromptSubmit({ prompt: 'hello' } as never))
+    await $.classic.UserPromptSubmit({ prompt: 'send a long task' } as never)
+    const out = await ($ as unknown as { tool: { call: (i: unknown) => Promise<{ context?: string[] }> } }).tool.call({ tool: 'mcp__claude_ai_Mempalace__mempalace_event_append', type: 'task.request', from_agent: ME, to_agent: PEER, body: 'x'.repeat(3500) })
+    expect((out.context ?? []).join('\n')).not.toContain('went out UNSIGNED')
+    expect(longBodyNote(3500)).toContain('status=superseded')
+  })
+
+  test('sessions reads check-ins in pages that shrink when a reply is too large', async ($, on) => {
+    const { mcp } = world(on, { drawersTooLargeOver: 20, presence: [`identity: ${PEER} | checked_in 2026-10-04T10:00:00Z | plugin 0.5.0 mod | listening yes | host mac-mini | project app`] })
+    const out = JSON.stringify(await $.command.run({ command: 'mempalace-sharedbrain:sessions', args: '' } as never))
+    expect(out).toContain('Sessions checked in to the hub')
+    expect(mcp.filter(c => c.tool === 'mempalace_list_drawers').map(c => c.args.limit)).toEqual([50, 25, 12])
   })
 })
