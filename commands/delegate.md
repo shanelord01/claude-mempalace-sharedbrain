@@ -24,6 +24,12 @@ MEMPALACE SHARED BRAIN block in this session's context.
    `mempalace_event_append` as below, not `mempalace_task_create`: only an appended event can carry
    the signature the worker needs, and the plugin signs it once the person confirms in the dialog
    it shows. A task created with `mempalace_task_create` arrives unsigned and is only read there.
+   The person sees the whole text before it is signed, so a task over 3,000 characters is never
+   signed. Put a longer brief in an artifact first (`mempalace_artifact_put`, kind `note`), then
+   send a short task that names the artifact id and its `sha256` and tells the worker to fetch it
+   with `mempalace_artifact_get` and check the hash before acting (docs/bridge.md, Long briefs). If
+   a task went out unsigned, the plugin says why after the tool's result: tell the user, send it
+   again the short way, then ack the unsigned one with `status=superseded`.
    Otherwise, create it with `mempalace_task_create` (project, from_agent, to_agent, goal, branch,
    base_commit, done). When there are requirements, the goal's first line is
    `Requires: <req>, <req>`; task_create has no metadata field, and workers read that line. It returns the stored `task.request` and a handoff line. For non-code work

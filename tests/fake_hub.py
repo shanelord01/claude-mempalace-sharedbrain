@@ -57,13 +57,17 @@ def event_list(args):
     since = args.get("since_event_id")
     if since:
         ids = [e["id"] for e in events]
-        events = events[ids.index(since) + 1:] if since in ids else []
+        if since not in ids:  # the hub's own answer to an id it does not hold
+            return {"error": "since_event_id %r not found" % since}
+        events = events[ids.index(since) + 1:]
     if args.get("to_agent"):
         events = [e for e in events if e["to_agent"] in (args["to_agent"], "*")]
     if args.get("writer"):
         events = [e for e in events if e["from_agent"] == args["writer"]]
     elif args.get("from_agent") and not WRITER_PARAM:
         events = [e for e in events if e["from_agent"] == args["from_agent"]]
+    if args.get("since_created_at"):
+        events = [e for e in events if (e.get("created_at") or "") >= args["since_created_at"]]
     for key in ("type", "status", "correlation_id", "topic"):
         if args.get(key):
             events = [e for e in events if e.get(key) == args[key]]

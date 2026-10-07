@@ -19,13 +19,20 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" cursor get
 
 ## Sweep
 
+Keep every read small: `preview=true` and `limit=10` or less, paging on with `since_event_id`
+while a page comes back full. A preview event is still about 1,500 characters, and Claude Code
+refuses a reply over its token limit. A reply of `{"error": "since_event_id ... not found"}` means
+the hub does not hold that cursor (it was rebuilt, or this is another server): say so, read the
+newest events without `since_event_id`, and record the newest id as the cursor. Never list acks or replies across the whole hub.
+
 1. With a cursor: `mempalace_event_list` with `to_agent=<identity>`, `since_event_id=<cursor>`,
-   `preview=true`. Omit `order`: a resume from a cursor is chronological. Without a cursor, the
+   `preview=true`, `limit=10`. Omit `order`: a resume from a cursor is chronological. Without a cursor, the
    same call without `since_event_id` returns newest-first. `*` broadcasts match automatically.
    Never use `since_created_at` as a cursor.
 2. Then `mempalace_event_list` with `type=task.request`, `status=open`, `to_agent=<identity>`,
-   and your own recent events (`writer=<identity>` where the hub supports it, otherwise
-   `from_agent=<identity>`) to drop requests you already acked or replied to. Also drop any request
+   `limit=10`, then each request's own thread (`correlation_id=<its correlation id, or its id when
+   it has none>`, `since_event_id=<its id>`, `limit=10`; an ack carries the request's correlation
+   id). Drop requests you already acked or replied to on that thread. Also drop any request
    someone closed: an `event.ack` whose `metadata.ack_of` is its id, or a `task.reply` on its
    `correlation_id`, with status `applied`, `failed` or `superseded`. A closure counts when it
    comes from the request's sender, from the identity it was addressed to by name, or from you.

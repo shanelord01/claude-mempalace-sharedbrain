@@ -12,6 +12,7 @@ the hooks must always complete.
 """
 import hashlib
 import json
+import re
 import os
 import select
 import shlex
@@ -440,10 +441,65 @@ def fit_note(item):
     return "  requires %s; this machine meets it" % ", ".join(requires)
 
 
+def is_stale_cursor(exc):
+    """The hub's answer to a since_event_id it does not hold: after a rebuild, or on another server."""
+    return bool(re.search(r"since_event_id\b.*\bnot found", str(exc)))
+
+
+WINDOW_MARGIN_SECONDS = 600
+
+
+def id_time(event_id):
+    """The UTC time an event id was made at, from its stamp (evt_YYYYMMDDTHHMMSS_...), or None."""
+    m = re.match(r"^[A-Za-z]+_(\d{8}T\d{6})_", str(event_id or ""))
+    if not m:
+        return None
+    try:
+        import calendar
+        return calendar.timegm(time.strptime(m.group(1), "%Y%m%dT%H%M%S"))
+    except ValueError:
+        return None
+
+
+def read_again(client, lost, pages=5, **filters):
+    """After the hub refused `lost` as a since_event_id: the events from a little before the time that
+    id was made, oldest first, each once, at most `pages` pages. Returns (events, window start); the
+    start is '' when the id has no readable stamp, and then the newest page is read instead."""
+    at = id_time(lost)
+    if at is None:
+        return list(reversed(list_events(client, **filters))), ""
+    window = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at - WINDOW_MARGIN_SECONDS))
+    seen, out, last = set(), [], None
+    for _ in range(pages):
+        page = list_events(client, since_created_at=window, order="asc", since_event_id=last, **filters)
+        for event in page:
+            if event.get("id") and event["id"] not in seen:
+                seen.add(event["id"])
+                out.append(event)
+        if not page or len(page) < int(filters.get("limit") or 50):
+            break
+        last = page[-1].get("id")
+    return out, window
+
+
 def list_events(client, **filters):
+    """One mempalace_event_list call. An error the hub reports in the reply ({"error": ...}, which
+    is how it answers an unknown since_event_id) or a reply that does not parse raises ProbeError,
+    never an empty list. A reply that does not parse is asked for again with half the limit, down
+    to one event: a page's size follows its events."""
     arguments = {k: v for k, v in filters.items() if v not in (None, "", [])}
     arguments.setdefault("preview", True)
-    return (client.call_tool("mempalace_event_list", arguments)).get("events") or []
+    limit = max(1, int(arguments.get("limit") or 50))
+    while True:
+        arguments["limit"] = limit
+        data = client.call_tool("mempalace_event_list", arguments)
+        if isinstance(data, dict) and isinstance(data.get("error"), str) and data.get("success") is not True:
+            raise ProbeError("mempalace_event_list: %s" % data["error"][:200])
+        if isinstance(data, dict) and isinstance(data.get("events"), list):
+            return data["events"]
+        if limit <= 1:
+            raise ProbeError("mempalace_event_list: the reply could not be read")
+        limit = max(1, limit // 2)
 
 
 TERMINAL = {"applied", "failed", "superseded"}
@@ -485,7 +541,41 @@ def closed_tasks(events, tasks=(), ident=""):
     return ids, correlations
 
 
-def own_events(client, ident, limit=100):
+# Threads read per probe to find closures, least recently read first; requests past this count as
+# open until a later probe reads theirs.
+THREAD_CAP = 6
+
+
+def _threads_path(ident):
+    return os.path.join(C.STATE_DIR, "probe-threads-" + C.identity_filename(ident) + ".json")
+
+
+def thread_events(client, tasks, ident, now=None):
+    """Events on the threads of up to THREAD_CAP of `tasks`, the least recently read first (the
+    times are kept per identity in the state directory, so every task's thread gets its turn).
+    Each read takes the newest events after the task (order desc from its id), so the closure, the
+    last event of a long thread, is found."""
+    now = time.time() if now is None else now
+    path = _threads_path(ident)
+    seen = C._read_json(path)
+    order = sorted(tasks, key=lambda t: float(seen.get(t.get("id") or "", 0)))
+    events = []
+    for task in order[:THREAD_CAP]:
+        tid = task.get("id") or ""
+        try:
+            events += list_events(client, correlation_id=task.get("correlation_id") or tid,
+                                  since_event_id=tid, order="desc", limit=20)
+        except ProbeError as exc:
+            if not is_stale_cursor(exc):
+                raise
+            continue  # the task itself is not on this hub: nothing to read
+        seen[tid] = now
+    live = {t.get("id") for t in tasks}
+    C._write_json(path, {k: v for k, v in seen.items() if k in live})
+    return events
+
+
+def own_events(client, ident, limit=20):
     """Events written by this identity; uses `writer` when the hub's schema has it."""
     accepts_writer = client.tool_accepts("mempalace_event_list", "writer")
     if accepts_writer:
@@ -521,14 +611,39 @@ def run_probe(cfg, ident, cursor=""):
 
         limit = int(cfg["probe"].get("inbox_limit") or 10)
         if cursor:
-            result["new_since_cursor"] = [summarise_event(e) for e in list_events(
-                client, to_agent=ident, since_event_id=cursor, limit=limit)]
+            try:
+                new = list_events(client, to_agent=ident, since_event_id=cursor, limit=limit)
+            except ProbeError as exc:
+                if not is_stale_cursor(exc):
+                    raise
+                # The hub does not hold the cursor (rebuilt, or another server): read again from a little
+                # before its time, or the newest when its time cannot be read.
+                new, window = read_again(client, cursor, to_agent=ident, limit=limit)
+                if not new:
+                    # Nothing to report: the cursor moves to the newest event, or is cleared when there
+                    # is none, so the next probe does not meet the lost cursor again.
+                    newest = list_events(client, to_agent=ident, order="desc", limit=1)
+                    if newest and newest[0].get("id"):
+                        C.write_cursor(ident, newest[0]["id"])
+                    else:
+                        C.clear_cursor(ident)
+                result["cursor_note"] = (
+                    ("The recorded cursor %s is not on this hub (it was rebuilt, or this is another server), so the "
+                     "events from %s on were read again; some may have been reported before. Record the newest event "
+                     "id as the cursor once they are reported." % (cursor, window)) if window else
+                    ("The recorded cursor %s is not on this hub (it was rebuilt, or this is another server), and its "
+                     "time could not be read from it, so the newest events were read instead; record the newest "
+                     "event id as the cursor once they are reported." % cursor))
+            result["new_since_cursor"] = [summarise_event(e) for e in new]
         tasks = list_events(client, to_agent=ident, type="task.request", status="open", limit=limit)
-        mine = own_events(client, ident)
+        # Closures come from each request's own thread (an ack copies the request's correlation id, or
+        # its id when it has none), read from the request on. A hub-wide list of acks and replies grows
+        # with everyone's traffic and can be larger than a client accepts.
+        on_threads = thread_events(client, tasks, ident)
+        mine = own_events(client, ident) + [e for e in on_threads if (e.get("writer") or e.get("from_agent")) == ident]
         my_correlations = {e.get("correlation_id") for e in mine if e.get("correlation_id")}
         my_ack_targets = {(e.get("metadata") or {}).get("ack_of") for e in mine if (e.get("metadata") or {}).get("ack_of")}
-        closures = list_events(client, type="event.ack", limit=100) + list_events(client, type="task.reply", limit=100)
-        closed_ids, closed_correlations = closed_tasks(closures, tasks, ident)
+        closed_ids, closed_correlations = closed_tasks(on_threads, tasks, ident)
         for task in tasks:
             item = summarise_event(task)
             if task.get("id") in closed_ids or (task.get("correlation_id") and task.get("correlation_id") in closed_correlations):
@@ -560,14 +675,35 @@ def sweep_watch(cfg, ident, watch):
         if client is None:
             return [], watch.get("since_event_id") or "", "no transport configured"
         client.initialize()
-        events = list_events(
-            client, to_agent=ident, since_event_id=watch.get("since_event_id") or None,
-            correlation_id=watch.get("correlation_id") or None, topic=watch.get("topic") or None,
-            limit=int(cfg["wake"].get("limit") or 50), order="asc",
-        )
+        filters = dict(to_agent=ident, correlation_id=watch.get("correlation_id") or None,
+                       topic=watch.get("topic") or None, limit=int(cfg["wake"].get("limit") or 50))
+        stale = ""
+        try:
+            events = list_events(client, since_event_id=watch.get("since_event_id") or None, order="asc", **filters)
+        except ProbeError as exc:
+            if not is_stale_cursor(exc):
+                raise
+            # The hub does not hold the watch cursor (rebuilt, or another server): the events from a
+            # little before its time are read again and handed over, and the note says so. With no
+            # readable time, listening starts again from the newest event, as a first look does.
+            lost = watch.get("since_event_id")
+            events, window = read_again(client, lost, **filters)
+            if not events:
+                # Nothing to hand over: the watch cursor moves to the newest event, or is cleared
+                # (an empty id) when there is none, so the next check does not meet it again.
+                newest = list_events(client, order="desc", **dict(filters, limit=1))
+                last = (newest[0].get("id") if newest else "") or ""
+                return [], last, "STALE: the watch cursor %s is not on this hub; listening goes on from %s" % (
+                    lost, last or "the next event")
+            if not window:
+                newest = events[-1:] if events else []
+                last = (newest[0].get("id") if newest else "") or ""
+                return [], last, "STALE: the watch cursor %s is not on this hub; listening starts again from %s" % (
+                    lost, last or "the newest event")
+            stale = "STALE: the watch cursor %s is not on this hub; events from %s on were read again" % (lost, window)
         types = set(watch.get("types") or cfg["wake"].get("types") or [])
         matched = []
-        last_id = watch.get("since_event_id") or ""
+        last_id = "" if stale else (watch.get("since_event_id") or "")
         for event in events:
             last_id = event.get("id") or last_id
             if event.get("from_agent") == ident:
@@ -575,7 +711,7 @@ def sweep_watch(cfg, ident, watch):
             if types and event.get("type") not in types:
                 continue
             matched.append(summarise_event(event))
-        return matched, last_id, ""
+        return matched, last_id, stale
     except ProbeError as exc:
         return [], watch.get("since_event_id") or "", str(exc)
     except Exception as exc:
@@ -638,6 +774,8 @@ def format_probe(result, ident):
         result["drawers"] if result.get("drawers") is not None else "?")]
     if result.get("cursor"):
         new = result["new_since_cursor"]
+        if result.get("cursor_note"):
+            lines.append(result["cursor_note"])
         lines.append("Events addressed to %s since your cursor %s: %d%s" % (
             ident, result["cursor"], len(new), "." if not new else ":"))
         for item in new:

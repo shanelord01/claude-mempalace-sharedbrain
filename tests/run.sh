@@ -28,6 +28,7 @@ bad() { echo "FAIL  $1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; FAIL=$((FA
 expect_eq()       { [ "$2" = "$3" ] && ok "$1" || bad "$1" "got: $2"; }
 expect_contains() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing: $3" ;; esac; }
 expect_missing()  { case "$2" in *"$3"*) bad "$1" "unexpected: $3" ;; *) ok "$1" ;; esac; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }   # GNU stat, then BSD (macOS)
 context_of() { "$PY" -c 'import json,sys; d=json.load(sys.stdin); print(d.get("hookSpecificOutput",{}).get("additionalContext",""))'; }
 start_hub() { "$PY" "$ROOT/tests/fake_hub.py" --http 0 "$@" > "$TMP/hub.out" & HUB_PID=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q listening "$TMP/hub.out" 2>/dev/null && break; sleep 0.2; done; PORT="$(sed -n 's/listening on //p' "$TMP/hub.out")"; }
 stop_hub() { [ -n "$HUB_PID" ] && { kill "$HUB_PID"; wait "$HUB_PID" 2>/dev/null; HUB_PID=""; }; }
@@ -82,7 +83,7 @@ expect_eq "exactly one block" "$(grep -c 'mempalace-shared-brain:start' "$CLAUDE
 "$SETUP" rules check --project demo >/dev/null; expect_eq "check: current exits 0" "$?" "0"
 OUT="$("$SETUP" rules install --project demo --write)"
 expect_contains "second install is a no-op" "$OUT" "already current"
-sed -i 's/impersonate another agent/impersonate anybody/' "$CLAUDE_MD"
+sed -i.bak 's/impersonate another agent/impersonate anybody/' "$CLAUDE_MD" && rm -f "$CLAUDE_MD.bak"
 "$SETUP" rules check --project demo >/dev/null; expect_eq "check: edited block exits 4 (stale)" "$?" "4"
 "$SETUP" rules install --project demo --write >/dev/null
 expect_contains "install replaces a stale block in place" "$(cat "$CLAUDE_MD")" "impersonate another agent"
@@ -154,7 +155,7 @@ expect_eq "save_interval 0 disables the checkpoint" "$(echo "$PAYLOAD" | "$STOP"
 echo "# precompact snapshot and handoff"
 expect_eq "precompact never blocks" "$(echo "{\"session_id\":\"t1\",\"transcript_path\":\"$TMP/transcript.jsonl\",\"trigger\":\"auto\"}" | "$PRE")" "{}"
 [ -s "$TMP/state/pending/t1.md" ] && ok "pending snapshot written" || bad "pending snapshot written"
-expect_eq "snapshot is private" "$(stat -c %a "$TMP/state/pending/t1.md")" "600"
+expect_eq "snapshot is private" "$(mode_of "$TMP/state/pending/t1.md")" "600"
 OUT="$(echo '{"session_id":"t1","source":"compact","cwd":"/tmp/demo"}' | "$SS" | context_of)"
 expect_contains "post-compact handoff names the pending file" "$OUT" "snapshotted them to"
 expect_missing "probe skipped after compaction" "$OUT" "Live check"
@@ -169,6 +170,15 @@ expect_contains "unacked listed" "$OUT" "  - evt_01_task_unacked"
 expect_contains "unmeetable requirement flagged" "$OUT" "THIS MACHINE CANNOT MEET: xcode>=99"
 expect_contains "Requires line read from the body" "$OUT" "requires python; this machine meets it"
 expect_missing "acked task not listed" "$OUT" "  - evt_02_task_acked"
+"$SETUP" cursor set evt_99_gone >/dev/null
+OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
+expect_contains "a cursor the hub does not hold is said so, not read as an empty inbox" "$OUT" "The recorded cursor evt_99_gone is not on this hub"
+expect_contains "the newest events are read instead" "$OUT" "  - evt_01_task_unacked"
+"$SETUP" cursor set evt_20261002T003000_gone >/dev/null
+OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
+expect_contains "a lost cursor with a time reads again from a little before it" "$OUT" "the events from 2026-10-02T00:20:00Z on were read again"
+expect_contains "a reply in that window is shown" "$OUT" "  - evt_06_reply_blocked"
+"$SETUP" cursor clear >/dev/null
 expect_missing "other agent's task not listed" "$OUT" "evt_05_not_mine"
 "$SETUP" cursor set evt_04_broadcast >/dev/null
 OUT="$(MEMPALACE_TEST_TOKEN=test-token "$SETUP" probe 2>&1)"
@@ -227,7 +237,7 @@ start_hub --token cc-token --oauth-secret s3cret
 OUT="$(MP_CLIENT_SECRET=s3cret "$SETUP" probe 2>&1)"
 expect_contains "client credentials token reaches the hub" "$OUT" "hub reachable"
 [ -n "$(ls "$TMP/state/oauth" 2>/dev/null)" ] && ok "access token cached" || bad "access token cached"
-expect_eq "token cache is private" "$(stat -c %a "$TMP"/state/oauth/*.json)" "600"
+expect_eq "token cache is private" "$(mode_of "$TMP"/state/oauth/*.json)" "600"
 OUT="$(MP_CLIENT_SECRET=wrong "$SETUP" probe 2>&1)"
 expect_contains "cached token still used with a wrong secret (not expired)" "$OUT" "hub reachable"
 rm -f "$TMP"/state/oauth/*.json
@@ -393,6 +403,75 @@ print(sorted(P.closed_tasks([ack("x:claude:z", "evt_n")], [named], "me:claude:b"
 PYEOF
 )"
 expect_eq "closures count only from sender, addressee or self; anyone for a broadcast" "$OUT" "[] ['evt_n'] ['evt_b']"
+OUT="$("$PY" - "$ROOT/hooks/lib" <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1])
+import sb_probe as P
+class Hub:
+    """Answers mempalace_event_list like the hub: an error reply for an unknown since_event_id, an
+    unreadable reply over `cap` events, and order desc after since_event_id."""
+    def __init__(self, events, cap=100):
+        self.events, self.cap, self.calls = events, cap, []
+    def initialize(self):
+        pass
+    def close(self):
+        pass
+    def call_tool(self, name, args):
+        self.calls.append(dict(args))
+        ids = [e["id"] for e in self.events]
+        since = args.get("since_event_id")
+        if since and since not in ids:
+            return {"error": "since_event_id %r not found" % since}
+        if args["limit"] > self.cap:
+            return {"raw": "{\"events\": [{\"id\": \"cut"}
+        rows = [e for e in self.events if (not args.get("correlation_id") or e.get("correlation_id") == args["correlation_id"])
+                and (not args.get("to_agent") or e.get("to_agent") in (args["to_agent"], "*"))]
+        if since:
+            rows = [e for e in rows if ids.index(e["id"]) > ids.index(since)]
+        if args.get("order") == "desc" or (not since and args.get("order") != "asc"):
+            rows = rows[::-1]
+        return {"events": rows[: args["limit"]]}
+tasks = [{"id": "t%d" % i, "correlation_id": "c%d" % i, "to_agent": "*", "from_agent": "s:claude:a"} for i in range(8)]
+long = [{"id": "f%d" % i, "correlation_id": "c0", "type": "status"} for i in range(30)]
+closer = {"id": "z", "correlation_id": "c0", "type": "event.ack", "status": "applied", "from_agent": "s:claude:a", "metadata": {"ack_of": "t0"}}
+hub = Hub(tasks + long + [closer])
+got = P.thread_events(hub, tasks, "me:claude:b", now=1)
+first = [c["correlation_id"] for c in hub.calls]
+hub.calls = []
+P.thread_events(hub, tasks, "me:claude:b", now=2)
+second = [c["correlation_id"] for c in hub.calls][:2]
+print("closure-found" if any(e["id"] == "z" for e in got) else "closure-missed",
+      "desc" if all(c.get("order") == "desc" for c in hub.calls) else "asc",
+      len(first), sorted(second))
+try:
+    P.list_events(Hub(tasks), to_agent="*", since_event_id="gone", limit=5)
+    print("stale-read-as-empty")
+except P.ProbeError as exc:
+    print("stale" if P.is_stale_cursor(exc) else "other")
+small = Hub(tasks, cap=3)
+print(len(P.list_events(small, to_agent="*", limit=20)), [c["limit"] for c in small.calls])
+P.open_client = lambda cfg: (Hub(tasks), "http", "")
+print(P.sweep_watch({"wake": {"limit": 50}}, "me:claude:b", {"since_event_id": "gone"})[1:])
+class TimedHub(Hub):
+    def call_tool(self, name, args):
+        got = Hub.call_tool(self, name, args)
+        if args.get("since_created_at") and "events" in got:
+            got["events"] = [e for e in got["events"] if e.get("created_at", "") >= args["since_created_at"]]
+        return got
+timed = [{"id": "r0", "to_agent": "me:claude:b", "type": "task.reply", "from_agent": "p", "created_at": "2026-10-08T09:40:00Z", "body": "", "status": ""},
+         {"id": "r1", "to_agent": "me:claude:b", "type": "task.reply", "from_agent": "p", "created_at": "2026-10-08T09:55:00Z", "body": "", "status": ""}]
+P.open_client = lambda cfg: (TimedHub(timed), "http", "")
+got = P.sweep_watch({"wake": {"limit": 50, "types": ["task.reply"]}}, "me:claude:b", {"since_event_id": "evt_20261008T100000_gone"})
+print([m["id"] for m in got[0]], got[1], got[2])
+got = P.sweep_watch({"wake": {"limit": 50, "types": ["task.reply"]}}, "me:claude:b", {"since_event_id": "evt_20261009T100000_gone"})
+print(got[0], got[1], got[2])
+PYEOF
+)"
+expect_eq "probe threads: closure on a long thread found, newest first, rotated, stale and unreadable replies handled" "$OUT" "closure-found desc 6 ['c6', 'c7']
+stale
+2 [20, 10, 5, 2]
+('t7', 'STALE: the watch cursor gone is not on this hub; listening starts again from t7')
+['r1'] r1 STALE: the watch cursor evt_20261008T100000_gone is not on this hub; events from 2026-10-08T09:50:00Z on were read again
+[] r1 STALE: the watch cursor evt_20261009T100000_gone is not on this hub; listening goes on from r1"
 
 "$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{}).pop("sign_tasks",None); json.dump(d,open(p,"w"))' "$TMP/config.json"
 expect_contains "signing asks once per recipient by default" "$("$SETUP" bridge status)" '"sign_tasks": "session"'
@@ -405,7 +484,7 @@ echo "# signing and pairing"
 if command -v ssh-keygen >/dev/null; then
   KEYINFO="$("$SETUP" sign show)"
   expect_contains "a bridge key is created" "$KEYINFO" '"available": true'
-  expect_eq "the key is private" "$(stat -c %a "$TMP/bridge_ed25519")" "600"
+  expect_eq "the key is private" "$(mode_of "$TMP/bridge_ed25519")" "600"
   expect_contains "this machine trusts its own key" "$(cat "$TMP/trusted_signers")" 'office-desktop:* namespaces="mempalace-bridge" ssh-ed25519'
   SIG="$(printf '%s' '{"from":"office-desktop:claude:demo","to":"mac:claude:app","type":"task.request","correlation":"t1","body":"go  \ncafé"}' | "$SETUP" sign make --cwd /tmp/demo)"
   mkev() { "$PY" -c "import json,sys; e={'id':'evt_s1','from_agent':'office-desktop:claude:demo','to_agent':'mac:claude:app','type':'task.request','correlation_id':'t1','body':'go  \ncafé','metadata':{'bridge_sig':json.loads(sys.argv[1])}}; $1; print(json.dumps(e))" "$SIG"; }
@@ -455,8 +534,8 @@ else
 fi
 
 echo "# permissions"
-expect_eq "state dir private" "$(stat -c %a "$TMP/state")" "700"
-expect_eq "config private" "$(stat -c %a "$TMP/config.json")" "600"
+expect_eq "state dir private" "$(mode_of "$TMP/state")" "700"
+expect_eq "config private" "$(mode_of "$TMP/config.json")" "600"
 
 rm -rf "$ROOT"/hooks/lib/__pycache__ "$ROOT"/tests/__pycache__
 echo

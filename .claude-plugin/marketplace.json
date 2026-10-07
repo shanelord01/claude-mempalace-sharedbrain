@@ -9,7 +9,7 @@
     {
       "name": "mempalace-sharedbrain",
       "source": ".",
-      "version": "0.5.2",
+      "version": "0.5.4",
       "description": "Claude Code client for a MemPalace shared-brain hub: canonical rules block in CLAUDE.md, identity, inbox cursor, session-start hub check, wake on coordination events, machine capabilities and task routing, checkpoint and compaction saves."
     }
   ]

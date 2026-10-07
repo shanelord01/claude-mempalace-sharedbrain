@@ -78,14 +78,16 @@ def posture_lines(cfg, ident):
 
 def model_sweep_text(ident, cursor):
     """The inbox sweep as an instruction, for a hook with no path of its own to the hub."""
-    first = ("mempalace_event_list with to_agent=%s, since_event_id=%s, preview=true (omit order: a resume from a "
-             "cursor is chronological)" % (ident, cursor)) if cursor else (
+    first = ("mempalace_event_list with to_agent=%s, since_event_id=%s, preview=true, limit=10 (omit order: a resume "
+             "from a cursor is chronological; page on with since_event_id while a page comes back full)" % (ident, cursor)) if cursor else (
              "mempalace_event_list with to_agent=%s, preview=true, limit=10 (no cursor yet, so newest first)" % ident)
     return (
         "Inbox sweep (the hook has no path of its own to the hub, so make these calls yourself now, through the "
         "mempalace MCP tools, before the first task): (1) %s. (2) mempalace_event_list with to_agent=%s, "
-        "type=task.request, status=open, preview=true, then your own recent events (writer=%s, or from_agent=%s on a "
-        "hub whose event_list has no writer filter) to drop requests you already acked or replied to, and drop any "
+        "type=task.request, status=open, preview=true, limit=10, then each request's own thread (correlation_id=<its "
+        "correlation id, or its id>, since_event_id=<its id>, limit=10; never a hub-wide list of acks or replies, which "
+        "can be too large to read) and your own recent acks (writer=%s, or from_agent=%s on a hub whose event_list has "
+        "no writer filter; limit=10) to drop requests you already acked or replied to, and drop any "
         "request that is closed (an event.ack by ack_of, or a task.reply on its correlation, with status applied, failed "
         "or superseded, from the request's sender, from the identity it was addressed to by name, or from you; a "
         "broadcast anyone may close, and then say who closed it). Report anything "

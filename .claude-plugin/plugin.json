@@ -1,6 +1,6 @@
 {
   "name": "mempalace-sharedbrain",
-  "version": "0.5.2",
+  "version": "0.5.4",
   "description": "Claude Code client for a MemPalace shared-brain hub: installs and keeps current the canonical rules block in CLAUDE.md without the mempalace package, composes the host:harness:project identity, carries the inbox cursor, checks the hub and the task inbox at session start, wakes the session on new coordination events, bridges messages between agents (a running session acts on its mail within a minute, a stopped one picks it up when it next starts, inside per-thread limits), publishes what each machine can do and routes tasks to machines that meet their requirements, and keeps checkpoint and compaction saves working for a remote client.",
   "author": {
     "name": "shanelord01",

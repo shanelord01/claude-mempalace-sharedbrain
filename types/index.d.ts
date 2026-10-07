@@ -33,6 +33,8 @@ export type HubStatus = {
   openTasks: InboxItem[]
   checkedAt: number
   error: string
+  /** Why the last check failed: a reply too large to read, a hub that did not answer, a connection not up yet, or an error from the hub. */
+  cause?: 'too-large' | 'unreadable' | 'slow' | 'unreachable' | 'not-connected' | 'error'
   /** The last check failed and the mod tries again with the next prompt. */
   isRetrying?: boolean
 }
@@ -46,6 +48,10 @@ export type Delivery = {
   /** Watch cursor to record once the mail below is delivered. */
   watchCursor: string
   mail: InboxItem[]
+  /** The identity the delivery was for. */
+  identity?: string
+  /** Broadcast closures it reported (task ids): dropped from the store once delivered. */
+  closures?: string[]
 }
 
 declare module 'claude-code' {
