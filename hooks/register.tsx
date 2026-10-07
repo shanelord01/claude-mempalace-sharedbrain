@@ -766,6 +766,9 @@ type TurnPlan = { threads: Record<string, { turns: number; is_last: boolean }>; 
 
 let boot: Sweep | null = null // the sweep the bridge ran before the first prompt, not yet delivered
 let bootChecked = false
+// A prompt is checking the inbox itself right now: a background check that finishes meanwhile is
+// discarded, or the same inbox would be shown again with the next prompt.
+let promptSweeping = false
 let ticking = false
 let turnQueuedAt = 0
 let plannedTurn: TurnPlan | null = null
@@ -869,14 +872,14 @@ async function tick($: Api): Promise<void> {
     const ctx = await modContext($, cwd)
     const mode = ctx.bridge?.mode ?? 'off'
     const isCheckInDue = lastCheckIn > 0 && Date.now() - lastCheckIn >= (ctx.presence?.interval_minutes ?? 30) * 60_000
-    const needsBoot = mode !== 'off' && !swept && !bootChecked && ctx.sweep
+    const needsBoot = mode !== 'off' && !swept && !bootChecked && !promptSweeping && ctx.sweep
     if (!ctx.watch?.armed && !isCheckInDue && !needsBoot) return
     const server = await findServer($, ctx.mcp_server)
     if (needsBoot) {
       // Mail that waited while no session ran: picked up now, before anyone types.
       const done = await sweep($, ctx, server)
       bootChecked = true
-      if (swept) return // a prompt arrived meanwhile and swept the inbox itself
+      if (swept || promptSweeping) return // a prompt arrived meanwhile and checks the inbox itself
       boot = done
       swept = true
       await notePeersRelevance($, ctx, server)
@@ -980,8 +983,16 @@ export const register: Register = on => {
         // Keep the hook inside its 10 s budget (the command hooks beneath already spent some of it):
         // a hook that overruns is dropped whole, its context with it.
         const limitMs = Math.min(6_000, next.budget.remainingMs - 2_500)
-        const out = await firstSweep($, ctx, limitMs, isLastTry)
+        promptSweeping = true
+        let out: Awaited<ReturnType<typeof firstSweep>>
+        try {
+          out = await firstSweep($, ctx, limitMs, isLastTry)
+        } finally {
+          promptSweeping = false
+        }
         if (out.ok || isLastTry) swept = true
+        // This prompt delivers the inbox: a background check that also finished must not show it again.
+        if (out.ok) boot = null
         delivery.cursor = out.lastId
         extra.push(out.text)
         // Hub text in the context: what the sweep showed. A failed sweep asks the model to read the inbox

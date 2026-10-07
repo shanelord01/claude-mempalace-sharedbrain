@@ -27,7 +27,7 @@ const TASK_NEEDS_XCODE = {
 const TASK_ACKED = { id: 'evt_02', type: 'task.request', status: 'open', from_agent: 'other', to_agent: '*', body: 'done already' }
 const MY_ACK = { id: 'evt_03', type: 'event.ack', status: 'claimed', from_agent: ME, metadata: { ack_of: 'evt_02' } }
 
-function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[] } = {}) {
+function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]; isUp?: () => boolean; meshPeers?: unknown[]; rawReply?: string; presence?: string[]; closures?: unknown[]; mine?: unknown[]; turn?: unknown; claimHeld?: boolean; recentMail?: unknown[]; openTasks?: unknown[]; thread?: unknown[]; slowHubMs?: number } = {}) {
   const calls: string[][] = []
   const mcp: Array<{ tool: string; args: Record<string, unknown> }> = []
   const beneath: Array<Record<string, unknown>> = []
@@ -74,6 +74,7 @@ function world(on: On, opts: { ctx?: Ctx; hubDown?: boolean; newMail?: unknown[]
   })
   on('mcp.call', async (_$: unknown, e: { server: string; tool: string; args: Record<string, unknown> }) => {
     mcp.push({ tool: e.tool, args: e.args })
+    if (opts.slowHubMs) await clock.sleep(opts.slowHubMs)
     if (opts.rawReply !== undefined) return { value: { content: [{ type: 'text', text: opts.rawReply }], isError: false } }
     if (opts.isUp && !opts.isUp()) return { value: { content: [{ type: 'text', text: 'no connected MCP tool' }], isError: true } }
     if (opts.hubDown || e.server !== SERVER) return { value: { content: [{ type: 'text', text: 'no such server' }], isError: true } }
@@ -671,6 +672,22 @@ describe('bridge', () => {
     expect(submitted[0]).toContain(BRIDGE_TAG)
     const turn = await $.classic.UserPromptSubmit({ prompt: submitted[0] } as never)
     expect((turn.additionalContext ?? []).join('\n')).toContain('run the tests')
+  })
+
+  test('a prompt that sweeps while the startup check is in flight shows the inbox once', async ($, on) => {
+    const { deliver, clock } = world(on, { ctx: context({ bridge: { ...BRIDGE, mode: 'read' } }), recentMail: [TASK], slowHubMs: 2_000, turn: { allowed: false, reason: 'hourly limit', threads: {} } })
+    await $.classic.SessionStart({ source: 'resume' } as never)
+    await $.session.start({ cwd: '/tmp/demo', surface: null } as never)
+    await clock.advance(8_000) // the startup check begins and waits on the slow hub
+    const first = $.classic.UserPromptSubmit({ prompt: 'hello' } as never) // arrives while it runs
+    await clock.advance(30_000)
+    const result = await first
+    expect((result.additionalContext ?? []).join('\n')).toContain('Inbox (checked by')
+    deliver(result)
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    const second = $.classic.UserPromptSubmit({ prompt: 'next' } as never)
+    await clock.advance(30_000)
+    expect(((await second).additionalContext ?? []).join('\n')).not.toContain('Inbox (checked by')
   })
 
   test('with the bridge off nothing starts a turn', async ($, on) => {
