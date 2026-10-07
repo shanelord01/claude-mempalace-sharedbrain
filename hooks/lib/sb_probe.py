@@ -619,6 +619,14 @@ def run_probe(cfg, ident, cursor=""):
                 # The hub does not hold the cursor (rebuilt, or another server): read again from a little
                 # before its time, or the newest when its time cannot be read.
                 new, window = read_again(client, cursor, to_agent=ident, limit=limit)
+                if not new:
+                    # Nothing to report: the cursor moves to the newest event, or is cleared when there
+                    # is none, so the next probe does not meet the lost cursor again.
+                    newest = list_events(client, to_agent=ident, order="desc", limit=1)
+                    if newest and newest[0].get("id"):
+                        C.write_cursor(ident, newest[0]["id"])
+                    else:
+                        C.clear_cursor(ident)
                 result["cursor_note"] = (
                     ("The recorded cursor %s is not on this hub (it was rebuilt, or this is another server), so the "
                      "events from %s on were read again; some may have been reported before. Record the newest event "
@@ -680,6 +688,13 @@ def sweep_watch(cfg, ident, watch):
             # readable time, listening starts again from the newest event, as a first look does.
             lost = watch.get("since_event_id")
             events, window = read_again(client, lost, **filters)
+            if not events:
+                # Nothing to hand over: the watch cursor moves to the newest event, or is cleared
+                # (an empty id) when there is none, so the next check does not meet it again.
+                newest = list_events(client, order="desc", **dict(filters, limit=1))
+                last = (newest[0].get("id") if newest else "") or ""
+                return [], last, "STALE: the watch cursor %s is not on this hub; listening goes on from %s" % (
+                    lost, last or "the next event")
             if not window:
                 newest = events[-1:] if events else []
                 last = (newest[0].get("id") if newest else "") or ""
@@ -688,7 +703,7 @@ def sweep_watch(cfg, ident, watch):
             stale = "STALE: the watch cursor %s is not on this hub; events from %s on were read again" % (lost, window)
         types = set(watch.get("types") or cfg["wake"].get("types") or [])
         matched = []
-        last_id = watch.get("since_event_id") or ""
+        last_id = "" if stale else (watch.get("since_event_id") or "")
         for event in events:
             last_id = event.get("id") or last_id
             if event.get("from_agent") == ident:

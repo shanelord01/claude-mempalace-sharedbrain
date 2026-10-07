@@ -56,6 +56,9 @@ def main():
         watch["since_event_id"] = last_id
         C.write_watch(ident, watch)
     stale_note = ""
+    if error.startswith("STALE: ") and not last_id and watch.get("since_event_id"):
+        watch.pop("since_event_id", None)  # the hub holds nothing for it: the next check starts afresh
+        C.write_watch(ident, watch)
     if error.startswith("STALE: "):
         C.log("WAKE identity %s: %s" % (ident, error))
         stale_note = "MEMPALACE WAKE: " + error[len("STALE: "):] + "; some may have been shown before."

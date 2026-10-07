@@ -462,13 +462,16 @@ timed = [{"id": "r0", "to_agent": "me:claude:b", "type": "task.reply", "from_age
 P.open_client = lambda cfg: (TimedHub(timed), "http", "")
 got = P.sweep_watch({"wake": {"limit": 50, "types": ["task.reply"]}}, "me:claude:b", {"since_event_id": "evt_20261008T100000_gone"})
 print([m["id"] for m in got[0]], got[1], got[2])
+got = P.sweep_watch({"wake": {"limit": 50, "types": ["task.reply"]}}, "me:claude:b", {"since_event_id": "evt_20261009T100000_gone"})
+print(got[0], got[1], got[2])
 PYEOF
 )"
 expect_eq "probe threads: closure on a long thread found, newest first, rotated, stale and unreadable replies handled" "$OUT" "closure-found desc 6 ['c6', 'c7']
 stale
 2 [20, 10, 5, 2]
 ('t7', 'STALE: the watch cursor gone is not on this hub; listening starts again from t7')
-['r1'] r1 STALE: the watch cursor evt_20261008T100000_gone is not on this hub; events from 2026-10-08T09:50:00Z on were read again"
+['r1'] r1 STALE: the watch cursor evt_20261008T100000_gone is not on this hub; events from 2026-10-08T09:50:00Z on were read again
+[] r1 STALE: the watch cursor evt_20261009T100000_gone is not on this hub; listening goes on from r1"
 
 "$PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.setdefault("bridge",{}).pop("sign_tasks",None); json.dump(d,open(p,"w"))' "$TMP/config.json"
 expect_contains "signing asks once per recipient by default" "$("$SETUP" bridge status)" '"sign_tasks": "session"'

@@ -420,9 +420,16 @@ async function readOn($: Api, server: string, args: Record<string, unknown>, sin
       }
     }
     last = String(page.list.at(-1)?.id ?? last)
-    if (page.list.length < page.limit || !page.list.length) return { list, last, more: false, stale: true, window }
+    if (page.list.length < page.limit || !page.list.length) break
+    if (i === pages - 1) return { list, last, more: true, stale: true, window }
   }
-  return { list, last, more: true, stale: true, window }
+  if (!list.length) {
+    // Nothing in the window: the cursor moves to the newest event (or is cleared when there is
+    // none), so the next check does not meet the same lost cursor and say so again.
+    const newest = await events($, server, { ...args, limit: 1 })
+    last = String(newest[0]?.id ?? '')
+  }
+  return { list, last, more: false, stale: true, window }
 }
 
 /**
@@ -686,7 +693,10 @@ async function sweep($: Api, ctx: ModContext, server: string): Promise<Sweep> {
   ])
   if (requests.stale) stale.push('open requests')
   const recent = inbox.list
-  const lastId = ctx.cursor ? String(recent.at(-1)?.id ?? '') : String(recent[0]?.id ?? '')
+  const lastId = ctx.cursor ? String(recent.at(-1)?.id ?? (inbox.stale ? inbox.last : '')) : String(recent[0]?.id ?? '')
+  // A lost inbox cursor with nothing at all for this identity on this hub: cleared, so the next check
+  // reads as a first one instead of meeting the same lost cursor.
+  if (inbox.stale && !recent.length && !inbox.last) await python($, await $.session.root(), ['cursor', 'clear'])
 
   // The open requests: those tracked before and the new ones, less any this identity took on.
   const acked = ackedBy(ownAcks.mine, ident)
@@ -748,7 +758,8 @@ async function sweep($: Api, ctx: ModContext, server: string): Promise<Sweep> {
   await saveTracking($, ident, {
     v: 1,
     open: still,
-    openCursor: requests.last || saved?.openCursor || '',
+    // After a lost cursor `last` is where it carries on, or '' to read as a first check.
+    openCursor: requests.stale ? requests.last : requests.last || saved?.openCursor || '',
     ackCursor: ownAcks.last || saved?.ackCursor || '',
     threads: Object.fromEntries(Object.entries(threads).filter(([key]) => live.has(key))),
     closures: [...notes.values()].slice(-20),
@@ -825,6 +836,12 @@ async function pollWatch($: Api, ctx: ModContext, server: string): Promise<{ ite
     $.ui.toast(again.window
       ? `MemPalace: the watch cursor ${clean(since, 60)} is not on this hub; mail from ${again.window} on is read again.`
       : `MemPalace: the watch cursor ${clean(since, 60)} is not on this hub; listening starts again from the newest event.`)
+    if (!again.list.length) {
+      // Nothing to hand over: the watch cursor moves to the newest event, or is cleared when there
+      // is none, so the next check does not meet the lost cursor again.
+      await python($, await $.session.root(), ['listen', 'cursor', again.last || 'clear'])
+      return { items: [], last: '' }
+    }
     if (!again.window) since = ''
     got = again.window ? again.list : [...again.list].reverse()
   }

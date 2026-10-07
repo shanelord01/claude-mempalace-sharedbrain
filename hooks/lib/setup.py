@@ -204,6 +204,11 @@ def cmd_listen(cfg, args):
             print("listening is not armed for %s" % ident, file=sys.stderr)
             return 1
         event_id = (args.since or "").strip()
+        if event_id == "clear":  # the hub does not hold the cursor and has nothing newer: start afresh
+            watch.pop("since_event_id", None)
+            C.write_watch(ident, watch)
+            print("watch cursor for %s cleared" % ident)
+            return 0
         if not re.fullmatch(r"evt_[A-Za-z0-9_.\-]+", event_id):
             print("listen cursor needs an event id like evt_20260101T000000_abcdef012345 (pass it with --from or as the next argument)", file=sys.stderr)
             return 1

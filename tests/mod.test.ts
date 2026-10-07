@@ -1073,3 +1073,20 @@ describe('second review fixes', () => {
     expect(out.split(PEER).length - 1).toBe(1)
   })
 })
+
+describe('final review fix', () => {
+  test('a lost cursor whose re-read window is empty moves to the newest event, so it is met once', async ($, on) => {
+    const NEWEST = { id: 'evt_09', type: 'status', from_agent: 'mac-mini:claude:app', to_agent: '*' }
+    const { calls, toasts, deliver, mcp } = world(on, {
+      ctx: context({ cursor: 'evt_20261008T100000_lost', watch: { armed: true, since_event_id: 'evt_20261008T100000_dead' } }),
+      knownIds: ['evt_09'], events: [], newest: [NEWEST], mine: [],
+    })
+    const first = await $.classic.UserPromptSubmit({ prompt: 'hello' } as never)
+    expect(calls).toContainEqual(['listen', 'cursor', 'evt_09'])
+    expect(toasts.length).toBe(1)
+    deliver(first)
+    await $.classic.Stop({ stop_hook_active: false } as never)
+    expect(calls).toContainEqual(['cursor', 'set', 'evt_09'])
+    expect(mcp.some(c => c.args.limit === 1 && c.args.to_agent === ME && !c.args.since_event_id)).toBe(true)
+  })
+})
