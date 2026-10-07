@@ -445,7 +445,7 @@ async function drawersIn($: Api, server: string, wing: string, room: string, tot
     // Offset paging can repeat a drawer (a check-in updated in place moves): each is kept once, and
     // a page that brings nothing new ends the listing.
     const seenIds = new Set(out.map(d => String(d.drawer_id ?? '')))
-    const fresh = page.filter(d => !d.drawer_id || !seenIds.has(String(d.drawer_id)))
+    const fresh = page.filter(d => !d.drawer_id || (!seenIds.has(String(d.drawer_id)) && Boolean(seenIds.add(String(d.drawer_id)))))
     out.push(...fresh)
     offset += page.length
     if (page.length < limit || !fresh.length) break
